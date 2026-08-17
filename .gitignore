@@ -1,0 +1,23 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Local environment files
+.env
+.env.local
+.env.*.local
+
+# Test output
+coverage/
+
+# SQLite (added at Checkpoint 2)
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Miscellaneous
+.DS_Store
+*.log
