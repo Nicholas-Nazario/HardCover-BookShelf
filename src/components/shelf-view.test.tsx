@@ -225,7 +225,7 @@ describe("ShelfView", () => {
     expect(dialog.parentElement?.parentElement).toBe(shelfScene);
   });
 
-  it("configures any book as a spine and restores that choice for the profile", async () => {
+  it("edits any book's appearance from the shelf-wide edit mode", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, snapshot)),
@@ -239,13 +239,23 @@ describe("ShelfView", () => {
     const card = trigger.closest(".book-card") as HTMLElement;
     expect(card.dataset.presentation).toBe("cover");
 
-    await user.click(trigger);
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByText("Choose a book below")).toBeTruthy();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    await user.click(
+      screen.getByRole("button", {
+        name: "Select Read Book by First Author, Second Author for appearance editing",
+      }),
+    );
+    expect(screen.getAllByText("Appearance for Read Book")).toHaveLength(2);
     await user.click(screen.getByRole("radio", { name: "Spine" }));
     expect(card.dataset.presentation).toBe("spine");
     expect(card.querySelector(".book-spine")).toBeTruthy();
     expect(loadBookPresentationPreferences(localStorage, "Adam")).toEqual({
       1: "spine",
     });
+    await user.click(screen.getByRole("button", { name: "Done" }));
+    expect(screen.queryByText("Editing shelf")).toBeNull();
 
     firstView.unmount();
     render(<ShelfView username="adam" />);
