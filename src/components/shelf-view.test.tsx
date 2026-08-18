@@ -269,12 +269,17 @@ describe("ShelfView", () => {
     const trigger = await screen.findByRole("button", {
       name: "Open details for Read Book by First Author, Second Author",
     });
-    const card = trigger.closest(".book-card") as HTMLElement;
+    let card = trigger.closest(".book-card") as HTMLElement;
     expect(card.dataset.presentation).toBe("cover");
 
     await user.click(screen.getByRole("button", { name: "Edit" }));
     expect(screen.getByText("Choose a book below")).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
+    card = screen
+      .getByRole("button", {
+        name: "Select Read Book by First Author, Second Author for appearance editing",
+      })
+      .closest(".book-card") as HTMLElement;
     await user.click(
       screen.getByRole("button", {
         name: "Select Read Book by First Author, Second Author for appearance editing",

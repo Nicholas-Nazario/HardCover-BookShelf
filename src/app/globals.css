@@ -570,6 +570,27 @@ p {
   outline-offset: 4px;
 }
 
+.book-card[data-dragging="true"] {
+  opacity: 0.3;
+}
+
+.book-card[data-drop-preview="true"] .book-cover-button {
+  outline: 3px dashed var(--shelf-focus);
+  outline-offset: 4px;
+}
+
+.shelf-page[data-edit-mode="true"] .book-card {
+  transition: transform 180ms ease, opacity 180ms ease;
+}
+
+.shelf-drag-overlay {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  pointer-events: none;
+  filter: drop-shadow(0 1rem 1rem rgb(0 0 0 / 35%));
+}
+
 .book-cover-button:focus-visible,
 .book-dialog-close:focus-visible,
 .book-hardcover-link:focus-visible,
