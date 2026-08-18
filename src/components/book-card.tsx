@@ -1,6 +1,10 @@
 "use client";
 
 import Image from "next/image";
+import type {
+  DraggableAttributes,
+  DraggableSyntheticListeners,
+} from "@dnd-kit/core";
 import { ExternalLink, X } from "lucide-react";
 import { createPortal } from "react-dom";
 import {
@@ -24,6 +28,13 @@ interface BookCardProps {
   isEditing?: boolean;
   isSelectedForEditing?: boolean;
   onSelectForEditing?: () => void;
+  drag?: {
+    attributes: DraggableAttributes;
+    listeners: DraggableSyntheticListeners | undefined;
+    setNodeRef: (node: HTMLElement | null) => void;
+    isDragging: boolean;
+    isDropPreview: boolean;
+  };
 }
 
 interface CoverArtworkProps {
@@ -68,6 +79,7 @@ export function BookCard({
   isEditing = false,
   isSelectedForEditing = false,
   onSelectForEditing,
+  drag,
 }: BookCardProps) {
   const [isOpen, setIsOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -155,6 +167,9 @@ export function BookCard({
       data-presentation={presentation}
       data-editing={isEditing || undefined}
       data-selected-for-editing={isSelectedForEditing || undefined}
+      data-dragging={drag?.isDragging || undefined}
+      data-drop-preview={drag?.isDropPreview || undefined}
+      ref={drag?.setNodeRef}
       style={cardStyle}
       aria-label={label}
     >
@@ -169,6 +184,8 @@ export function BookCard({
         }
         aria-haspopup={isEditing ? undefined : "dialog"}
         aria-pressed={isEditing ? isSelectedForEditing : undefined}
+        {...drag?.attributes}
+        {...drag?.listeners}
         onClick={() => {
           if (isEditing) {
             onSelectForEditing?.();

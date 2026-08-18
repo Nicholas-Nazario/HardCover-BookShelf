@@ -2,6 +2,19 @@
 
 import { ArrowLeft, Pencil, Redo2, RefreshCw, Settings, Undo2, X } from "lucide-react";
 import {
+  DndContext,
+  DragOverlay,
+  KeyboardSensor,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragOverEvent,
+  type DragStartEvent,
+} from "@dnd-kit/core";
+import {
   type KeyboardEvent,
   type MouseEvent,
   useEffect,
@@ -19,6 +32,7 @@ import {
   type ShelfBookIds,
   type ShelfLayout,
   type ShelfSceneLayout,
+  moveShelfItem,
   updateBookPresentation,
 } from "../client/shelf-layout";
 import {
@@ -711,6 +725,11 @@ export function ShelfView({
         isEditing={isEditMode}
         selectedBookId={selectedBookId}
         onSelectBookForEditing={setSelectedBookId}
+        onMoveBook={(activeItemId, overItemId) =>
+          commitLayoutChange((current) =>
+            moveShelfItem(current, "read", activeItemId, overItemId),
+          )
+        }
         hidden={selectedShelf !== "read"}
       />
       <ShelfPanel
@@ -722,6 +741,11 @@ export function ShelfView({
         isEditing={isEditMode}
         selectedBookId={selectedBookId}
         onSelectBookForEditing={setSelectedBookId}
+        onMoveBook={(activeItemId, overItemId) =>
+          commitLayoutChange((current) =>
+            moveShelfItem(current, "wantToRead", activeItemId, overItemId),
+          )
+        }
         hidden={selectedShelf !== "wantToRead"}
       />
     </article>
@@ -737,6 +761,7 @@ interface ShelfPanelProps {
   isEditing: boolean;
   selectedBookId: number | null;
   onSelectBookForEditing: (bookId: number) => void;
+  onMoveBook: (activeItemId: string, overItemId: string) => void;
   hidden: boolean;
 }
 
@@ -749,9 +774,45 @@ function ShelfPanel({
   isEditing,
   selectedBookId,
   onSelectBookForEditing,
+  onMoveBook,
   hidden,
 }: ShelfPanelProps) {
-  const displayedBooks = booksInLayoutOrder(books, layout);
+  const [previewLayout, setPreviewLayout] = useState<ShelfSceneLayout | null>(null);
+  const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    useSensor(KeyboardSensor),
+  );
+  const displayedBooks = booksInLayoutOrder(books, previewLayout ?? layout);
+  const activeBook = activeItemId
+    ? displayedBooks.find((item) => item.itemId === activeItemId)
+    : null;
+
+  function updatePreview(activeItemId: string, overItemId: string) {
+    if (!layout) return;
+    const preview = moveShelfItem(
+      { version: 1, shelves: { read: layout, wantToRead: layout } },
+      "read",
+      activeItemId,
+      overItemId,
+    ).shelves.read;
+    setPreviewLayout(preview);
+  }
+
+  function handleDragStart(event: DragStartEvent) {
+    setActiveItemId(String(event.active.id));
+    setPreviewLayout(layout);
+  }
+
+  function handleDragOver(event: DragOverEvent) {
+    if (event.over) updatePreview(String(event.active.id), String(event.over.id));
+  }
+
+  function finishDrag(event: DragEndEvent) {
+    if (event.over) onMoveBook(String(event.active.id), String(event.over.id));
+    setActiveItemId(null);
+    setPreviewLayout(null);
+  }
 
   return (
     <section
@@ -763,16 +824,41 @@ function ShelfPanel({
       className="shelf-panel"
     >
       {books.length > 0 ? (
+        isEditing ? <DndContext
+          sensors={sensors}
+          onDragStart={handleDragStart}
+          onDragOver={handleDragOver}
+          onDragEnd={finishDrag}
+          onDragCancel={() => { setActiveItemId(null); setPreviewLayout(null); }}
+        >
         <ul className="bookshelf" aria-label={`${shelfLabel} bookshelf`}>
-          {displayedBooks.map(({ book, presentation }, index) => (
-            <BookCard
+          {displayedBooks.map(({ itemId, book, presentation }, index) => (
+            <DraggableBookCard
               key={book.id}
+              itemId={itemId}
               book={book}
               eager={index < 8}
               presentation={presentation}
               isEditing={isEditing}
               isSelectedForEditing={selectedBookId === book.id}
               onSelectForEditing={() => onSelectBookForEditing(book.id)}
+              isDropPreview={activeItemId === itemId}
+            />
+          ))}
+        </ul>
+        <DragOverlay>{activeBook ? <ul className="shelf-drag-overlay"><BookCard book={activeBook.book} presentation={activeBook.presentation} isEditing /></ul> : null}</DragOverlay>
+        </DndContext> : <ul className="bookshelf" aria-label={`${shelfLabel} bookshelf`}>
+          {displayedBooks.map(({ itemId, book, presentation }, index) => (
+            <DraggableBookCard
+              key={book.id}
+              itemId={itemId}
+              book={book}
+              eager={index < 8}
+              presentation={presentation}
+              isEditing={false}
+              isSelectedForEditing={false}
+              onSelectForEditing={() => onSelectBookForEditing(book.id)}
+              isDropPreview={false}
             />
           ))}
         </ul>
@@ -780,6 +866,39 @@ function ShelfPanel({
         <p className="shelf-empty">No {shelfLabel} books are on this shelf.</p>
       )}
     </section>
+  );
+}
+
+interface DraggableBookCardProps {
+  itemId: string;
+  book: ShelfSnapshotDto["shelves"]["read"][number];
+  eager: boolean;
+  presentation: BookPresentation;
+  isEditing: boolean;
+  isSelectedForEditing: boolean;
+  onSelectForEditing: () => void;
+  isDropPreview: boolean;
+}
+
+function DraggableBookCard({ itemId, isEditing, isDropPreview, ...props }: DraggableBookCardProps) {
+  const draggable = useDraggable({ id: itemId, disabled: !isEditing });
+  const droppable = useDroppable({ id: itemId, disabled: !isEditing });
+
+  return (
+    <BookCard
+      {...props}
+      isEditing={isEditing}
+      drag={{
+        attributes: draggable.attributes,
+        listeners: draggable.listeners,
+        setNodeRef: (node) => {
+          draggable.setNodeRef(node);
+          droppable.setNodeRef(node);
+        },
+        isDragging: draggable.isDragging,
+        isDropPreview,
+      }}
+    />
   );
 }
 
@@ -793,15 +912,16 @@ function snapshotBookIds(snapshot: ShelfSnapshotDto): ShelfBookIds {
 function booksInLayoutOrder(
   books: ShelfSnapshotDto["shelves"]["read"],
   layout: ShelfSceneLayout | null,
-): Array<{ book: ShelfSnapshotDto["shelves"]["read"][number]; presentation: BookPresentation }> {
+): Array<{ itemId: string; book: ShelfSnapshotDto["shelves"]["read"][number]; presentation: BookPresentation }> {
   if (!layout) {
-    return books.map((book) => ({ book, presentation: "cover" }));
+    return books.map((book) => ({ itemId: `book:${book.id}`, book, presentation: "cover" }));
   }
 
   const booksById = new Map(books.map((book) => [book.id, book]));
   const displayedBookIds = new Set<number>();
   const displayedBooks: Array<{
     book: ShelfSnapshotDto["shelves"]["read"][number];
+    itemId: string;
     presentation: BookPresentation;
   }> = [];
 
@@ -819,13 +939,13 @@ function booksInLayoutOrder(
       }
 
       displayedBookIds.add(book.id);
-      displayedBooks.push({ book, presentation: item.presentation });
+      displayedBooks.push({ itemId, book, presentation: item.presentation });
     }
   }
 
   for (const book of books) {
     if (!displayedBookIds.has(book.id)) {
-      displayedBooks.push({ book, presentation: "cover" });
+      displayedBooks.push({ itemId: `book:${book.id}`, book, presentation: "cover" });
     }
   }
 

@@ -125,6 +125,45 @@ export function updateBookPresentation(
   return changed ? { ...layout, shelves } : layout;
 }
 
+export function moveShelfItem(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  activeItemId: string,
+  overItemId: string,
+): ShelfLayout {
+  if (activeItemId === overItemId) return layout;
+  const scene = layout.shelves[shelf];
+  const sourceRow = scene.rows.find((row) => row.items.includes(activeItemId));
+  const targetRow = scene.rows.find((row) => row.items.includes(overItemId));
+  const item = scene.items[activeItemId];
+  if (!sourceRow || !targetRow || !item) return layout;
+  const sourceItems = sourceRow.items.filter((id) => id !== activeItemId);
+  const targetItems = sourceRow === targetRow ? sourceItems : [...targetRow.items];
+  const targetIndex = targetItems.indexOf(overItemId);
+  if (targetIndex < 0) return layout;
+  targetItems.splice(targetIndex, 0, activeItemId);
+  const rows = scene.rows.map((row) =>
+    row.id === sourceRow.id && row.id === targetRow.id
+      ? { ...row, items: targetItems }
+      : row.id === sourceRow.id
+        ? { ...row, items: sourceItems }
+        : row.id === targetRow.id
+          ? { ...row, items: targetItems }
+          : row,
+  );
+  return {
+    ...layout,
+    shelves: {
+      ...layout.shelves,
+      [shelf]: {
+        ...scene,
+        rows,
+        items: { ...scene.items, [activeItemId]: { ...item, rowId: targetRow.id } },
+      },
+    },
+  };
+}
+
 export function loadShelfLayout(
   storage: StorageReader,
   username: string,

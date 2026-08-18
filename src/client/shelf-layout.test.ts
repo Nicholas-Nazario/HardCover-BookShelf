@@ -6,6 +6,7 @@ import {
   createShelfLayout,
   loadOrCreateShelfLayout,
   loadShelfLayout,
+  moveShelfItem,
   reconcileShelfLayout,
   saveShelfLayout,
   shelfLayoutStorageKey,
@@ -143,6 +144,14 @@ describe("shelf layout", () => {
     expect(bookItem(layout, "read", 2).presentation).toBe("cover");
     expect(bookItem(updatedLayout, "read", 2).presentation).toBe("spine");
     expect(updatedLayout.shelves.wantToRead).toBe(layout.shelves.wantToRead);
+  });
+
+  it("builds a non-mutating insertion preview when a book moves over another", () => {
+    const layout = createShelfLayout(bookIds);
+    const preview = moveShelfItem(layout, "read", "book:2", "book:1");
+
+    expect(layout.shelves.read.rows[0]?.items).toEqual(["book:1", "book:2"]);
+    expect(preview.shelves.read.rows[0]?.items).toEqual(["book:2", "book:1"]);
   });
 
   it("does not throw when browser storage is unavailable", () => {
