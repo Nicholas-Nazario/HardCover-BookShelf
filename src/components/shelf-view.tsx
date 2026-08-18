@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, Pencil, RefreshCw, Settings, X } from "lucide-react";
+import { ArrowLeft, Pencil, Redo2, RefreshCw, Settings, Undo2, X } from "lucide-react";
 import {
   type KeyboardEvent,
   type MouseEvent,
@@ -10,10 +10,17 @@ import {
 } from "react";
 import {
   type BookPresentation,
-  type BookPresentationPreferences,
-  loadBookPresentationPreferences,
-  saveBookPresentationPreferences,
 } from "../client/book-presentations";
+import {
+  createShelfLayout,
+  loadOrCreateShelfLayout,
+  reconcileShelfLayout,
+  saveShelfLayout,
+  type ShelfBookIds,
+  type ShelfLayout,
+  type ShelfSceneLayout,
+  updateBookPresentation,
+} from "../client/shelf-layout";
 import {
   loadShelfSnapshot,
   refreshShelfSnapshot,
@@ -32,6 +39,13 @@ import { BookCard } from "./book-card";
 
 type ShelfName = "read" | "wantToRead";
 const SHELF_THEME_NAMES = Object.keys(SHELF_THEMES) as ShelfThemeName[];
+const MAX_LAYOUT_HISTORY_ENTRIES = 50;
+
+interface ShelfLayoutHistory {
+  current: ShelfLayout | null;
+  past: ShelfLayout[];
+  future: ShelfLayout[];
+}
 
 interface ShelfViewProps {
   username: string;
@@ -49,8 +63,11 @@ export function ShelfView({
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshMessage, setRefreshMessage] = useState<string | null>(null);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  const [bookPresentations, setBookPresentations] =
-    useState<BookPresentationPreferences>({});
+  const [layoutHistory, setLayoutHistory] = useState<ShelfLayoutHistory>({
+    current: null,
+    past: [],
+    future: [],
+  });
   const [activeTheme, setActiveTheme] = useState<ShelfThemeName>(theme);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -63,6 +80,9 @@ export function ShelfView({
   const refreshController = useRef<AbortController | null>(null);
   const themeConfig = SHELF_THEMES[activeTheme];
   const shelfOverlays = themeConfig.shelfOverlays?.join(" ");
+  const shelfLayout = layoutHistory.current;
+  const canUndoLayout = layoutHistory.past.length > 0;
+  const canRedoLayout = layoutHistory.future.length > 0;
 
   useEffect(() => {
     setActiveTheme(theme);
@@ -71,14 +91,10 @@ export function ShelfView({
   useEffect(() => {
     const storage = getBrowserStorage();
 
-    if (snapshot && storage) {
-      saveBookPresentationPreferences(
-        storage,
-        snapshot.profile.username,
-        bookPresentations,
-      );
+    if (snapshot && shelfLayout && storage) {
+      saveShelfLayout(storage, snapshot.profile.username, shelfLayout);
     }
-  }, [bookPresentations, snapshot?.profile.username]);
+  }, [shelfLayout, snapshot?.profile.username]);
 
   useEffect(() => {
     if (!isSettingsOpen) {
@@ -129,6 +145,32 @@ export function ShelfView({
   }, [isSettingsOpen]);
 
   useEffect(() => {
+    if (!isEditMode) {
+      return;
+    }
+
+    function handleEditHistoryKeyDown(event: globalThis.KeyboardEvent) {
+      const key = event.key.toLowerCase();
+      if (
+        !(event.metaKey || event.ctrlKey) ||
+        (key !== "z" && key !== "y")
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      setLayoutHistory((current) =>
+        event.shiftKey || key === "y"
+          ? redoLayoutHistory(current)
+          : undoLayoutHistory(current),
+      );
+    }
+
+    window.addEventListener("keydown", handleEditHistoryKeyDown);
+    return () => window.removeEventListener("keydown", handleEditHistoryKeyDown);
+  }, [isEditMode]);
+
+  useEffect(() => {
     const controller = new AbortController();
     let active = true;
 
@@ -138,7 +180,7 @@ export function ShelfView({
     setIsRefreshing(false);
     setRefreshMessage(null);
     setRefreshError(null);
-    setBookPresentations({});
+    setLayoutHistory({ current: null, past: [], future: [] });
     setIsEditMode(false);
     setSelectedBookId(null);
     refreshController.current?.abort();
@@ -155,14 +197,18 @@ export function ShelfView({
       .then((nextSnapshot) => {
         if (active) {
           const storage = getBrowserStorage();
-          setBookPresentations(
-            storage
-              ? loadBookPresentationPreferences(
+          const bookIds = snapshotBookIds(nextSnapshot);
+          setLayoutHistory({
+            current: storage
+              ? loadOrCreateShelfLayout(
                   storage,
                   nextSnapshot.profile.username,
+                  bookIds,
                 )
-              : {},
-          );
+              : createShelfLayout(bookIds),
+            past: [],
+            future: [],
+          });
           setSnapshot(nextSnapshot);
         }
       })
@@ -201,6 +247,21 @@ export function ShelfView({
       });
 
       if (refreshController.current === controller) {
+        const storage = getBrowserStorage();
+        const bookIds = snapshotBookIds(nextSnapshot);
+        setLayoutHistory((current) =>
+          reconcileLayoutHistory(
+            current,
+            bookIds,
+            storage
+              ? loadOrCreateShelfLayout(
+                  storage,
+                  nextSnapshot.profile.username,
+                  bookIds,
+                )
+              : createShelfLayout(bookIds),
+          ),
+        );
         setSnapshot(nextSnapshot);
         setRefreshMessage("Shelf refreshed. The latest books are now shown.");
       }
@@ -252,9 +313,40 @@ export function ShelfView({
       return;
     }
 
-    setBookPresentations((current) => {
-      return { ...current, [bookId]: presentation };
+    commitLayoutChange((current) =>
+      updateBookPresentation(current, bookId, presentation),
+    );
+  }
+
+  function commitLayoutChange(
+    change: (current: ShelfLayout) => ShelfLayout,
+  ) {
+    setLayoutHistory((current) => {
+      if (!current.current) {
+        return current;
+      }
+
+      const nextLayout = change(current.current);
+      if (nextLayout === current.current) {
+        return current;
+      }
+
+      return {
+        current: nextLayout,
+        past: [...current.past, current.current].slice(
+          -MAX_LAYOUT_HISTORY_ENTRIES,
+        ),
+        future: [],
+      };
     });
+  }
+
+  function undoLayoutChange() {
+    setLayoutHistory(undoLayoutHistory);
+  }
+
+  function redoLayoutChange() {
+    setLayoutHistory(redoLayoutHistory);
   }
 
   function toggleEditMode() {
@@ -335,6 +427,9 @@ export function ShelfView({
   const selectedBook = [...snapshot.shelves.read, ...snapshot.shelves.wantToRead].find(
     (book) => book.id === selectedBookId,
   );
+  const selectedBookPresentation = selectedBook
+    ? presentationForBook(shelfLayout, selectedBook.id)
+    : "cover";
 
   return (
     <article
@@ -363,6 +458,28 @@ export function ShelfView({
               </small>
             </div>
             <div className="shelf-edit-toolbar-controls">
+              <div className="shelf-edit-history-controls" aria-label="Layout history">
+                <button
+                  className="shelf-action-button"
+                  type="button"
+                  aria-label="Undo layout change"
+                  title="Undo (⌘/Ctrl+Z)"
+                  disabled={!canUndoLayout}
+                  onClick={undoLayoutChange}
+                >
+                  <Undo2 aria-hidden="true" />
+                </button>
+                <button
+                  className="shelf-action-button"
+                  type="button"
+                  aria-label="Redo layout change"
+                  title="Redo (⌘/Ctrl+Shift+Z or Ctrl+Y)"
+                  disabled={!canRedoLayout}
+                  onClick={redoLayoutChange}
+                >
+                  <Redo2 aria-hidden="true" />
+                </button>
+              </div>
               {selectedBook ? (
                 <fieldset>
                   <legend className="visually-hidden">
@@ -373,8 +490,7 @@ export function ShelfView({
                       <label
                         key={presentation}
                         data-selected={
-                          (bookPresentations[selectedBook.id] ?? "cover") ===
-                          presentation
+                          selectedBookPresentation === presentation
                         }
                       >
                         <input
@@ -382,8 +498,7 @@ export function ShelfView({
                           name="selected-book-presentation"
                           value={presentation}
                           checked={
-                            (bookPresentations[selectedBook.id] ?? "cover") ===
-                            presentation
+                            selectedBookPresentation === presentation
                           }
                           onChange={() =>
                             selectBookPresentation(selectedBook.id, presentation)
@@ -592,7 +707,7 @@ export function ShelfView({
         labelledBy="read-tab"
         shelfLabel="Read"
         books={snapshot.shelves.read}
-        bookPresentations={bookPresentations}
+        layout={shelfLayout?.shelves.read ?? null}
         isEditing={isEditMode}
         selectedBookId={selectedBookId}
         onSelectBookForEditing={setSelectedBookId}
@@ -603,7 +718,7 @@ export function ShelfView({
         labelledBy="want-to-read-tab"
         shelfLabel="Want to Read"
         books={snapshot.shelves.wantToRead}
-        bookPresentations={bookPresentations}
+        layout={shelfLayout?.shelves.wantToRead ?? null}
         isEditing={isEditMode}
         selectedBookId={selectedBookId}
         onSelectBookForEditing={setSelectedBookId}
@@ -618,7 +733,7 @@ interface ShelfPanelProps {
   labelledBy: string;
   shelfLabel: string;
   books: ShelfSnapshotDto["shelves"]["read"];
-  bookPresentations: BookPresentationPreferences;
+  layout: ShelfSceneLayout | null;
   isEditing: boolean;
   selectedBookId: number | null;
   onSelectBookForEditing: (bookId: number) => void;
@@ -630,12 +745,14 @@ function ShelfPanel({
   labelledBy,
   shelfLabel,
   books,
-  bookPresentations,
+  layout,
   isEditing,
   selectedBookId,
   onSelectBookForEditing,
   hidden,
 }: ShelfPanelProps) {
+  const displayedBooks = booksInLayoutOrder(books, layout);
+
   return (
     <section
       id={id}
@@ -647,12 +764,12 @@ function ShelfPanel({
     >
       {books.length > 0 ? (
         <ul className="bookshelf" aria-label={`${shelfLabel} bookshelf`}>
-          {books.map((book, index) => (
+          {displayedBooks.map(({ book, presentation }, index) => (
             <BookCard
               key={book.id}
               book={book}
               eager={index < 8}
-              presentation={bookPresentations[book.id] ?? "cover"}
+              presentation={presentation}
               isEditing={isEditing}
               isSelectedForEditing={selectedBookId === book.id}
               onSelectForEditing={() => onSelectBookForEditing(book.id)}
@@ -664,6 +781,121 @@ function ShelfPanel({
       )}
     </section>
   );
+}
+
+function snapshotBookIds(snapshot: ShelfSnapshotDto): ShelfBookIds {
+  return {
+    read: snapshot.shelves.read.map((book) => book.id),
+    wantToRead: snapshot.shelves.wantToRead.map((book) => book.id),
+  };
+}
+
+function booksInLayoutOrder(
+  books: ShelfSnapshotDto["shelves"]["read"],
+  layout: ShelfSceneLayout | null,
+): Array<{ book: ShelfSnapshotDto["shelves"]["read"][number]; presentation: BookPresentation }> {
+  if (!layout) {
+    return books.map((book) => ({ book, presentation: "cover" }));
+  }
+
+  const booksById = new Map(books.map((book) => [book.id, book]));
+  const displayedBookIds = new Set<number>();
+  const displayedBooks: Array<{
+    book: ShelfSnapshotDto["shelves"]["read"][number];
+    presentation: BookPresentation;
+  }> = [];
+
+  for (const row of layout.rows) {
+    for (const itemId of row.items) {
+      const item = layout.items[itemId];
+
+      if (!item || item.kind !== "book" || displayedBookIds.has(item.bookId)) {
+        continue;
+      }
+
+      const book = booksById.get(item.bookId);
+      if (!book) {
+        continue;
+      }
+
+      displayedBookIds.add(book.id);
+      displayedBooks.push({ book, presentation: item.presentation });
+    }
+  }
+
+  for (const book of books) {
+    if (!displayedBookIds.has(book.id)) {
+      displayedBooks.push({ book, presentation: "cover" });
+    }
+  }
+
+  return displayedBooks;
+}
+
+function presentationForBook(
+  layout: ShelfLayout | null,
+  bookId: number,
+): BookPresentation {
+  const itemId = `book:${bookId}`;
+
+  for (const shelf of ["read", "wantToRead"] as const) {
+    const item = layout?.shelves[shelf].items[itemId];
+
+    if (item?.kind === "book") {
+      return item.presentation;
+    }
+  }
+
+  return "cover";
+}
+
+function undoLayoutHistory(history: ShelfLayoutHistory): ShelfLayoutHistory {
+  const previousLayout = history.past.at(-1);
+
+  if (!previousLayout || !history.current) {
+    return history;
+  }
+
+  return {
+    current: previousLayout,
+    past: history.past.slice(0, -1),
+    future: [history.current, ...history.future].slice(
+      0,
+      MAX_LAYOUT_HISTORY_ENTRIES,
+    ),
+  };
+}
+
+function redoLayoutHistory(history: ShelfLayoutHistory): ShelfLayoutHistory {
+  const nextLayout = history.future[0];
+
+  if (!nextLayout || !history.current) {
+    return history;
+  }
+
+  return {
+    current: nextLayout,
+    past: [...history.past, history.current].slice(
+      -MAX_LAYOUT_HISTORY_ENTRIES,
+    ),
+    future: history.future.slice(1),
+  };
+}
+
+function reconcileLayoutHistory(
+  history: ShelfLayoutHistory,
+  bookIds: ShelfBookIds,
+  fallback: ShelfLayout,
+): ShelfLayoutHistory {
+  if (!history.current) {
+    return { current: fallback, past: [], future: [] };
+  }
+
+  return {
+    current: reconcileShelfLayout(history.current, bookIds),
+    past: history.past.map((layout) => reconcileShelfLayout(layout, bookIds)),
+    future: history.future.map((layout) => reconcileShelfLayout(layout, bookIds)),
+  };
 }
 
 function getBrowserStorage(): Storage | null {

@@ -11,8 +11,9 @@ The application currently provides a visual shelf page backed by the synchroniza
 - Refresh a profile from the shelf page while keeping the last good snapshot visible and intact if Hardcover fails.
 - Accept a username in the browser, synchronize it when necessary, and navigate to a dedicated shelf page.
 - Present Read and Want to Read books on an immersive, full-screen bookshelf with accessible tabs and compact toolbar controls.
-- Render books as cover-only objects with canonical Hardcover artwork and deterministic high-contrast fallbacks.
+- Render books as covers or generated spines, with canonical Hardcover artwork and deterministic high-contrast fallbacks.
 - Reveal book metadata, ratings, reading history, series information, and an accessible Hardcover link in a modal when a cover is selected.
+- Let readers use the shelf-wide Edit mode to select any book and choose its cover or spine appearance.
 - Switch between configurable shelf themes and remember the selected theme in a first-party browser cookie.
 
 Only public data is imported. The supported Hardcover statuses are:
@@ -26,7 +27,7 @@ The Book Metadata and Covers feature enriches the original PoC without changing 
 
 ## Shelf experience and themes
 
-The shelf route is a full-screen scene rather than a conventional card grid. Each book is represented by its cover alone; activating a cover opens an accessible dialog containing the book and reader metadata. The toolbar provides shelf tabs, synchronization, profile navigation, and appearance settings without introducing a separate page header.
+The shelf route is a full-screen scene rather than a conventional card grid. Books can appear as canonical covers or generated spines; activating a book opens an accessible dialog containing its metadata and reader information. The toolbar provides shelf tabs, synchronization, profile navigation, and appearance settings without introducing a separate page header. Its shelf-wide Edit mode replaces the toolbar controls with a book appearance editor: select a book, then choose Cover or Spine. This editing flow is separate from the metadata dialog.
 
 The built-in themes are:
 

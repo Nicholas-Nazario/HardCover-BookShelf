@@ -3,7 +3,11 @@
 import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadBookPresentationPreferences } from "../client/book-presentations";
+import {
+  createShelfLayout,
+  loadShelfLayout,
+  saveShelfLayout,
+} from "../client/shelf-layout";
 import { SHELF_THEME_COOKIE_NAME } from "../shared/shelf-themes";
 import { ShelfView } from "./shelf-view";
 
@@ -126,6 +130,35 @@ describe("ShelfView", () => {
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       "/api/profiles/%40Adam/books",
     );
+  });
+
+  it("renders books in their persisted scene order and appearance", async () => {
+    const layout = createShelfLayout({
+      read: [1, 2],
+      wantToRead: [3],
+    });
+    layout.shelves.read.rows[0]!.items = ["book:2", "book:1"];
+    const secondBook = layout.shelves.read.items["book:2"];
+    if (!secondBook || secondBook.kind !== "book") {
+      throw new Error("Expected the second test book in the layout.");
+    }
+    secondBook.presentation = "spine";
+    saveShelfLayout(localStorage, "adam", layout);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, snapshot)),
+    );
+
+    render(<ShelfView username="adam" />);
+
+    const shelf = await screen.findByRole("list", { name: "Read bookshelf" });
+    expect(within(shelf).getAllByRole("listitem").map((item) => item.dataset.bookId)).toEqual([
+      "2",
+      "1",
+    ]);
+    expect(
+      within(shelf).getAllByRole("listitem")[0]?.dataset.presentation,
+    ).toBe("spine");
   });
 
   it("visibly synchronizes a first-time profile before displaying it", async () => {
@@ -251,9 +284,23 @@ describe("ShelfView", () => {
     await user.click(screen.getByRole("radio", { name: "Spine" }));
     expect(card.dataset.presentation).toBe("spine");
     expect(card.querySelector(".book-spine")).toBeTruthy();
-    expect(loadBookPresentationPreferences(localStorage, "Adam")).toEqual({
-      1: "spine",
-    });
+    const undo = screen.getByRole("button", {
+      name: "Undo layout change",
+    }) as HTMLButtonElement;
+    const redo = screen.getByRole("button", {
+      name: "Redo layout change",
+    }) as HTMLButtonElement;
+    expect(undo.disabled).toBe(false);
+    expect(redo.disabled).toBe(true);
+    await user.click(undo);
+    expect(card.dataset.presentation).toBe("cover");
+    expect(undo.disabled).toBe(true);
+    expect(redo.disabled).toBe(false);
+    await user.click(redo);
+    expect(card.dataset.presentation).toBe("spine");
+    expect(
+      loadShelfLayout(localStorage, "Adam")?.shelves.read.items["book:1"],
+    ).toEqual(expect.objectContaining({ presentation: "spine" }));
     await user.click(screen.getByRole("button", { name: "Done" }));
     expect(screen.queryByText("Editing shelf")).toBeNull();
 
@@ -269,6 +316,37 @@ describe("ShelfView", () => {
     expect(restoredCard.querySelector(".book-spine-title")?.textContent).toBe(
       "Read Book",
     );
+  });
+
+  it("supports keyboard undo and redo while edit mode is active", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, snapshot)),
+    );
+    const user = userEvent.setup();
+    render(<ShelfView username="adam" />);
+
+    await screen.findByRole("button", {
+      name: "Open details for Read Book by First Author, Second Author",
+    });
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const editTrigger = screen.getByRole("button", {
+      name: "Select Read Book by First Author, Second Author for appearance editing",
+    });
+    await user.click(editTrigger);
+    await user.click(screen.getByRole("radio", { name: "Spine" }));
+
+    await user.keyboard("{Control>}z{/Control}");
+    expect(
+      (editTrigger.closest(".book-card") as HTMLElement | null)?.dataset
+        .presentation,
+    ).toBe("cover");
+
+    await user.keyboard("{Control>}{Shift>}z{/Shift}{/Control}");
+    expect(
+      (editTrigger.closest(".book-card") as HTMLElement | null)?.dataset
+        .presentation,
+    ).toBe("spine");
   });
 
   it("uses subtle icon actions and opens the configured theme settings", async () => {
