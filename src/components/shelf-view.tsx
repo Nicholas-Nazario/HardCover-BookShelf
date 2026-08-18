@@ -21,24 +21,28 @@ import {
   useRef,
   useState,
 } from "react";
-import {
-  type BookPresentation,
-} from "../client/book-presentations";
+import { type BookPresentation } from "../client/book-presentations";
 import {
   createShelfLayout,
+  createHorizontalBookStack,
   loadOrCreateShelfLayout,
   reconcileShelfLayout,
   saveShelfLayout,
   type ShelfBookIds,
+  type BookShelfItem,
+  type HorizontalBookStack as HorizontalBookStackModel,
   type ShelfLayout,
   type ShelfSceneLayout,
   moveShelfItem,
   updateBookPresentation,
+  updateBookOrientation,
+  type BookOrientation,
 } from "../client/shelf-layout";
 import {
   loadShelfSnapshot,
   refreshShelfSnapshot,
   ShelfLoadError,
+  type ShelfBookDto,
   type ShelfLoadPhase,
   type ShelfSnapshotDto,
 } from "../client/shelf-api";
@@ -50,6 +54,7 @@ import {
   type ShelfThemeName,
 } from "../shared/shelf-themes";
 import { BookCard } from "./book-card";
+import { HorizontalBookStack } from "./horizontal-book-stack";
 
 type ShelfName = "read" | "wantToRead";
 const SHELF_THEME_NAMES = Object.keys(SHELF_THEMES) as ShelfThemeName[];
@@ -86,6 +91,7 @@ export function ShelfView({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [selectedBookId, setSelectedBookId] = useState<number | null>(null);
+  const [selectedBookIds, setSelectedBookIds] = useState<number[]>([]);
   const readTab = useRef<HTMLButtonElement>(null);
   const wantToReadTab = useRef<HTMLButtonElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
@@ -197,6 +203,7 @@ export function ShelfView({
     setLayoutHistory({ current: null, past: [], future: [] });
     setIsEditMode(false);
     setSelectedBookId(null);
+    setSelectedBookIds([]);
     refreshController.current?.abort();
     refreshController.current = null;
 
@@ -299,6 +306,8 @@ export function ShelfView({
 
   function selectShelf(shelf: ShelfName, moveFocus = false) {
     setSelectedShelf(shelf);
+    setSelectedBookId(null);
+    setSelectedBookIds([]);
 
     if (moveFocus) {
       const target = shelf === "read" ? readTab.current : wantToReadTab.current;
@@ -330,6 +339,32 @@ export function ShelfView({
     commitLayoutChange((current) =>
       updateBookPresentation(current, bookId, presentation),
     );
+  }
+
+  function selectBookOrientation(bookId: number, orientation: BookOrientation) {
+    commitLayoutChange((current) => updateBookOrientation(current, bookId, orientation));
+  }
+
+  function selectBookForEditing(bookId: number) {
+    setSelectedBookId(bookId);
+    setSelectedBookIds((current) =>
+      current.includes(bookId)
+        ? current.filter((id) => id !== bookId)
+        : [...current, bookId],
+    );
+  }
+
+  function stackSelectedBooks() {
+    if (selectedBookIds.length < 2) return;
+    commitLayoutChange((current) =>
+      createHorizontalBookStack(
+        current,
+        selectedShelf,
+        selectedBookIds.map((id) => `book:${id}`),
+      ),
+    );
+    setSelectedBookId(null);
+    setSelectedBookIds([]);
   }
 
   function commitLayoutChange(
@@ -366,6 +401,7 @@ export function ShelfView({
   function toggleEditMode() {
     setIsEditMode((editing) => !editing);
     setSelectedBookId(null);
+    setSelectedBookIds([]);
   }
 
   function handleTabKeyDown(
@@ -444,6 +480,9 @@ export function ShelfView({
   const selectedBookPresentation = selectedBook
     ? presentationForBook(shelfLayout, selectedBook.id)
     : "cover";
+  const selectedBookOrientation = selectedBook
+    ? orientationForBook(shelfLayout, selectedBook.id)
+    : "vertical";
 
   return (
     <article
@@ -466,7 +505,9 @@ export function ShelfView({
             <div className="shelf-edit-toolbar-copy">
               <span>Editing shelf</span>
               <small>
-                {selectedBook
+                {selectedBookIds.length > 1
+                  ? `${selectedBookIds.length} books selected`
+                  : selectedBook
                   ? `Appearance for ${selectedBook.title}`
                   : "Select a book"}
               </small>
@@ -524,6 +565,23 @@ export function ShelfView({
                       </label>
                     ))}
                   </div>
+                  <div className="book-presentation-options">
+                    {(["vertical", "horizontal"] as const).map((orientation) => (
+                      <label key={orientation} data-selected={orientationForBook(shelfLayout, selectedBook.id) === orientation}>
+                        <input type="radio" name="selected-book-orientation" value={orientation} checked={orientationForBook(shelfLayout, selectedBook.id) === orientation} onChange={() => selectBookOrientation(selectedBook.id, orientation)} />
+                        <span>{orientation === "vertical" ? "Stand" : "Lay flat"}</span>
+                      </label>
+                    ))}
+                  </div>
+                  {selectedBookIds.length > 1 ? (
+                    <button
+                      className="shelf-stack-button"
+                      type="button"
+                      onClick={stackSelectedBooks}
+                    >
+                      Stack these books
+                    </button>
+                  ) : null}
                 </fieldset>
               ) : (
                 <span className="shelf-edit-toolbar-hint">
@@ -724,7 +782,8 @@ export function ShelfView({
         layout={shelfLayout?.shelves.read ?? null}
         isEditing={isEditMode}
         selectedBookId={selectedBookId}
-        onSelectBookForEditing={setSelectedBookId}
+        selectedBookIds={selectedBookIds}
+        onSelectBookForEditing={selectBookForEditing}
         onMoveBook={(activeItemId, overItemId) =>
           commitLayoutChange((current) =>
             moveShelfItem(current, "read", activeItemId, overItemId),
@@ -740,7 +799,8 @@ export function ShelfView({
         layout={shelfLayout?.shelves.wantToRead ?? null}
         isEditing={isEditMode}
         selectedBookId={selectedBookId}
-        onSelectBookForEditing={setSelectedBookId}
+        selectedBookIds={selectedBookIds}
+        onSelectBookForEditing={selectBookForEditing}
         onMoveBook={(activeItemId, overItemId) =>
           commitLayoutChange((current) =>
             moveShelfItem(current, "wantToRead", activeItemId, overItemId),
@@ -760,6 +820,7 @@ interface ShelfPanelProps {
   layout: ShelfSceneLayout | null;
   isEditing: boolean;
   selectedBookId: number | null;
+  selectedBookIds: number[];
   onSelectBookForEditing: (bookId: number) => void;
   onMoveBook: (activeItemId: string, overItemId: string) => void;
   hidden: boolean;
@@ -773,6 +834,7 @@ function ShelfPanel({
   layout,
   isEditing,
   selectedBookId,
+  selectedBookIds,
   onSelectBookForEditing,
   onMoveBook,
   hidden,
@@ -783,9 +845,9 @@ function ShelfPanel({
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor),
   );
-  const displayedBooks = booksInLayoutOrder(books, previewLayout ?? layout);
-  const activeBook = activeItemId
-    ? displayedBooks.find((item) => item.itemId === activeItemId)
+  const displayedEntries = shelfEntriesInLayoutOrder(books, previewLayout ?? layout);
+  const activeEntry = activeItemId
+    ? displayedEntries.find((entry) => shelfEntryPlacementId(entry) === activeItemId)
     : null;
 
   function updatePreview(activeItemId: string, overItemId: string) {
@@ -832,35 +894,73 @@ function ShelfPanel({
           onDragCancel={() => { setActiveItemId(null); setPreviewLayout(null); }}
         >
         <ul className="bookshelf" aria-label={`${shelfLabel} bookshelf`}>
-          {displayedBooks.map(({ itemId, book, presentation }, index) => (
-            <DraggableBookCard
-              key={book.id}
-              itemId={itemId}
-              book={book}
-              eager={index < 8}
-              presentation={presentation}
-              isEditing={isEditing}
-              isSelectedForEditing={selectedBookId === book.id}
-              onSelectForEditing={() => onSelectBookForEditing(book.id)}
-              isDropPreview={activeItemId === itemId}
-            />
-          ))}
+          {displayedEntries.map((entry, index) =>
+            entry.kind === "book" ? (
+              <DraggableBookCard
+                key={entry.item.id}
+                itemId={entry.item.id}
+                book={entry.book}
+                eager={index < 8}
+                presentation={entry.item.presentation}
+                orientation={entry.item.orientation}
+                isEditing={isEditing}
+                isSelectedForEditing={selectedBookIds.includes(entry.book.id) || selectedBookId === entry.book.id}
+                onSelectForEditing={() => onSelectBookForEditing(entry.book.id)}
+                isDropPreview={activeItemId === entry.item.id}
+              />
+            ) : (
+              <DraggableHorizontalBookStack
+                key={entry.stack.id}
+                entry={entry}
+                eager={index < 8}
+                isEditing
+                selectedBookIds={selectedBookIds}
+                onSelectBookForEditing={onSelectBookForEditing}
+                isDropPreview={activeItemId === `stack:${entry.stack.id}`}
+              />
+            ),
+          )}
         </ul>
-        <DragOverlay>{activeBook ? <ul className="shelf-drag-overlay"><BookCard book={activeBook.book} presentation={activeBook.presentation} isEditing /></ul> : null}</DragOverlay>
+        <DragOverlay>
+          {activeEntry ? (
+            <ul className="shelf-drag-overlay">
+              {activeEntry.kind === "book" ? (
+                <BookCard
+                  book={activeEntry.book}
+                  presentation={activeEntry.item.presentation}
+                  orientation={activeEntry.item.orientation}
+                  isEditing
+                />
+              ) : (
+                <HorizontalBookStack stack={activeEntry.stack} books={activeEntry.books} />
+              )}
+            </ul>
+          ) : null}
+        </DragOverlay>
         </DndContext> : <ul className="bookshelf" aria-label={`${shelfLabel} bookshelf`}>
-          {displayedBooks.map(({ itemId, book, presentation }, index) => (
-            <DraggableBookCard
-              key={book.id}
-              itemId={itemId}
-              book={book}
-              eager={index < 8}
-              presentation={presentation}
-              isEditing={false}
-              isSelectedForEditing={false}
-              onSelectForEditing={() => onSelectBookForEditing(book.id)}
-              isDropPreview={false}
-            />
-          ))}
+          {displayedEntries.map((entry, index) =>
+            entry.kind === "book" ? (
+              <DraggableBookCard
+                key={entry.item.id}
+                itemId={entry.item.id}
+                book={entry.book}
+                eager={index < 8}
+                presentation={entry.item.presentation}
+                orientation={entry.item.orientation}
+                isEditing={false}
+                isSelectedForEditing={false}
+                onSelectForEditing={() => onSelectBookForEditing(entry.book.id)}
+                isDropPreview={false}
+              />
+            ) : (
+              <HorizontalBookStack
+                key={entry.stack.id}
+                stack={entry.stack}
+                books={entry.books}
+                eager={index < 8}
+              />
+            ),
+          )}
         </ul>
       ) : (
         <p className="shelf-empty">No {shelfLabel} books are on this shelf.</p>
@@ -874,6 +974,7 @@ interface DraggableBookCardProps {
   book: ShelfSnapshotDto["shelves"]["read"][number];
   eager: boolean;
   presentation: BookPresentation;
+  orientation: BookOrientation;
   isEditing: boolean;
   isSelectedForEditing: boolean;
   onSelectForEditing: () => void;
@@ -902,6 +1003,49 @@ function DraggableBookCard({ itemId, isEditing, isDropPreview, ...props }: Dragg
   );
 }
 
+interface DraggableHorizontalBookStackProps {
+  entry: Extract<RenderableShelfEntry, { kind: "stack" }>;
+  eager: boolean;
+  isEditing: boolean;
+  selectedBookIds: readonly number[];
+  onSelectBookForEditing: (bookId: number) => void;
+  isDropPreview: boolean;
+}
+
+function DraggableHorizontalBookStack({
+  entry,
+  eager,
+  isEditing,
+  selectedBookIds,
+  onSelectBookForEditing,
+  isDropPreview,
+}: DraggableHorizontalBookStackProps) {
+  const itemId = `stack:${entry.stack.id}`;
+  const draggable = useDraggable({ id: itemId, disabled: !isEditing });
+  const droppable = useDroppable({ id: itemId, disabled: !isEditing });
+
+  return (
+    <HorizontalBookStack
+      stack={entry.stack}
+      books={entry.books}
+      eager={eager}
+      isEditing={isEditing}
+      selectedBookIds={selectedBookIds}
+      onSelectBookForEditing={onSelectBookForEditing}
+      drag={{
+        attributes: draggable.attributes,
+        listeners: draggable.listeners,
+        setNodeRef: (node) => {
+          draggable.setNodeRef(node);
+          droppable.setNodeRef(node);
+        },
+        isDragging: draggable.isDragging,
+        isDropPreview,
+      }}
+    />
+  );
+}
+
 function snapshotBookIds(snapshot: ShelfSnapshotDto): ShelfBookIds {
   return {
     read: snapshot.shelves.read.map((book) => book.id),
@@ -909,27 +1053,63 @@ function snapshotBookIds(snapshot: ShelfSnapshotDto): ShelfBookIds {
   };
 }
 
-function booksInLayoutOrder(
+export type RenderableShelfEntry =
+  | { kind: "book"; item: BookShelfItem; book: ShelfBookDto }
+  | {
+      kind: "stack";
+      stack: HorizontalBookStackModel;
+      books: Array<{
+        item: BookShelfItem;
+        book: ShelfBookDto;
+      }>;
+    };
+
+export function shelfEntriesInLayoutOrder(
   books: ShelfSnapshotDto["shelves"]["read"],
   layout: ShelfSceneLayout | null,
-): Array<{ itemId: string; book: ShelfSnapshotDto["shelves"]["read"][number]; presentation: BookPresentation }> {
+): RenderableShelfEntry[] {
   if (!layout) {
-    return books.map((book) => ({ itemId: `book:${book.id}`, book, presentation: "cover" }));
+    return books.map((book) => ({
+      kind: "book",
+      item: fallbackBookItem(book.id),
+      book,
+    }));
   }
 
   const booksById = new Map(books.map((book) => [book.id, book]));
   const displayedBookIds = new Set<number>();
-  const displayedBooks: Array<{
-    book: ShelfSnapshotDto["shelves"]["read"][number];
-    itemId: string;
-    presentation: BookPresentation;
-  }> = [];
+  const stackMemberItemIds = new Set(
+    Object.values(layout.stacks).flatMap((stack) => stack.bookItemIds),
+  );
+  const displayedEntries: RenderableShelfEntry[] = [];
 
   for (const row of layout.rows) {
     for (const itemId of row.items) {
+      if (itemId.startsWith("stack:")) {
+        const stack = layout.stacks[itemId.slice("stack:".length)];
+        if (!stack) continue;
+        const stackBooks = stack.bookItemIds.flatMap((memberItemId) => {
+          const item = layout.items[memberItemId];
+          if (!item || item.kind !== "book") return [];
+          const book = booksById.get(item.bookId);
+          if (!book || displayedBookIds.has(book.id)) return [];
+          displayedBookIds.add(book.id);
+          return [{ item, book }];
+        });
+        if (stackBooks.length > 0) {
+          displayedEntries.push({ kind: "stack", stack, books: stackBooks });
+        }
+        continue;
+      }
+
       const item = layout.items[itemId];
 
-      if (!item || item.kind !== "book" || displayedBookIds.has(item.bookId)) {
+      if (
+        !item ||
+        item.kind !== "book" ||
+        stackMemberItemIds.has(itemId) ||
+        displayedBookIds.has(item.bookId)
+      ) {
         continue;
       }
 
@@ -939,17 +1119,37 @@ function booksInLayoutOrder(
       }
 
       displayedBookIds.add(book.id);
-      displayedBooks.push({ itemId, book, presentation: item.presentation });
+      displayedEntries.push({ kind: "book", item, book });
     }
   }
 
   for (const book of books) {
     if (!displayedBookIds.has(book.id)) {
-      displayedBooks.push({ itemId: `book:${book.id}`, book, presentation: "cover" });
+      displayedEntries.push({
+        kind: "book",
+        item: fallbackBookItem(book.id),
+        book,
+      });
     }
   }
 
-  return displayedBooks;
+  return displayedEntries;
+}
+
+function fallbackBookItem(bookId: number): BookShelfItem {
+  return {
+    id: `book:${bookId}`,
+    kind: "book",
+    rowId: "row:fallback:0",
+    widthUnits: 1,
+    bookId,
+    presentation: "cover",
+    orientation: "vertical",
+  };
+}
+
+function shelfEntryPlacementId(entry: RenderableShelfEntry): string {
+  return entry.kind === "book" ? entry.item.id : `stack:${entry.stack.id}`;
 }
 
 function presentationForBook(
@@ -967,6 +1167,15 @@ function presentationForBook(
   }
 
   return "cover";
+}
+
+function orientationForBook(layout: ShelfLayout | null, bookId: number): BookOrientation {
+  const itemId = `book:${bookId}`;
+  for (const shelf of ["read", "wantToRead"] as const) {
+    const item = layout?.shelves[shelf].items[itemId];
+    if (item?.kind === "book") return item.orientation;
+  }
+  return "vertical";
 }
 
 function undoLayoutHistory(history: ShelfLayoutHistory): ShelfLayoutHistory {

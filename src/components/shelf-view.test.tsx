@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -9,6 +9,7 @@ import {
   saveShelfLayout,
 } from "../client/shelf-layout";
 import { SHELF_THEME_COOKIE_NAME } from "../shared/shelf-themes";
+import { bookSpineWidthRem } from "./book-card";
 import { ShelfView } from "./shelf-view";
 
 const emptyBookMetadata = {
@@ -352,6 +353,92 @@ describe("ShelfView", () => {
       (editTrigger.closest(".book-card") as HTMLElement | null)?.dataset
         .presentation,
     ).toBe("spine");
+  });
+
+  it("renders a created stack once with every member's shared spine artwork and undoes it as one action", async () => {
+    const layout = createShelfLayout({ read: [1, 2], wantToRead: [3] });
+    const secondItem = layout.shelves.read.items["book:2"];
+    if (!secondItem || secondItem.kind !== "book") {
+      throw new Error("Expected the second read book.");
+    }
+    secondItem.orientation = "horizontal";
+    saveShelfLayout(localStorage, "adam", layout);
+    const snapshotWithCovers = {
+      ...snapshot,
+      shelves: {
+        ...snapshot.shelves,
+        read: snapshot.shelves.read.map((book) => ({
+          ...book,
+          cover: {
+            url: `https://assets.hardcover.app/covers/${book.id}.jpg`,
+            width: 400,
+            height: 600,
+          },
+        })),
+      },
+    };
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, snapshotWithCovers)),
+    );
+    const user = userEvent.setup();
+    render(<ShelfView username="adam" />);
+
+    await screen.findByRole("button", {
+      name: "Open details for Read Book by First Author, Second Author",
+    });
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(screen.getByRole("button", {
+      name: "Select Read Book by First Author, Second Author for appearance editing",
+    }));
+    await user.click(screen.getByRole("button", {
+      name: "Select Another Read Book by Third Author for appearance editing",
+    }));
+    await user.click(screen.getByRole("button", { name: "Stack these books" }));
+
+    const shelf = screen.getByRole("list", { name: "Read bookshelf" });
+    const stack = shelf.querySelector<HTMLElement>(".book-stack");
+    expect(stack).toBeTruthy();
+    expect(shelf.querySelectorAll(":scope > .book-stack")).toHaveLength(1);
+    expect(shelf.querySelectorAll(":scope > .book-card")).toHaveLength(0);
+    expect(stack?.querySelectorAll(":scope > .book-card")).toHaveLength(2);
+    expect(stack?.querySelectorAll(".book-spine")).toHaveLength(2);
+    expect(stack?.querySelectorAll(".book-spine-cover-image")).toHaveLength(2);
+    expect(stack?.querySelectorAll(".book-spine-title").length).toBeGreaterThanOrEqual(2);
+    expect(stack?.querySelectorAll(".book-spine-author")).toHaveLength(2);
+    const stackCards = Array.from(
+      stack?.querySelectorAll<HTMLElement>(".book-card") ?? [],
+    );
+    expect(
+      stackCards.map((card) => [card.dataset.orientation, card.dataset.stackIndex]),
+    ).toEqual([
+      ["horizontal", "0"],
+      ["horizontal", "1"],
+    ]);
+    expect(stackCards[0]?.style.getPropertyValue("--stack-offset")).toBe(
+      "0.000rem",
+    );
+    expect(stackCards[1]?.style.getPropertyValue("--stack-offset")).toBe(
+      `${bookSpineWidthRem(snapshotWithCovers.shelves.read[0]!).toFixed(3)}rem`,
+    );
+
+    await waitFor(() => {
+      expect(loadShelfLayout(localStorage, "adam")?.shelves.read.rows[0]?.items).toEqual([
+        "stack:1",
+      ]);
+    });
+
+    await user.click(screen.getByRole("button", { name: "Undo layout change" }));
+
+    expect(shelf.querySelector(".book-stack")).toBeNull();
+    const restoredCards = Array.from(
+      shelf.querySelectorAll<HTMLElement>(":scope > .book-card"),
+    );
+    expect(restoredCards.map((card) => card.dataset.bookId)).toEqual(["1", "2"]);
+    expect(restoredCards.map((card) => card.dataset.orientation)).toEqual([
+      "vertical",
+      "horizontal",
+    ]);
   });
 
   it("uses subtle icon actions and opens the configured theme settings", async () => {

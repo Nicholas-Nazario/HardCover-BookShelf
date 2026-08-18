@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { bookPresentationStorageKey } from "./book-presentations";
 import {
   createShelfLayout,
+  createHorizontalBookStack,
   loadOrCreateShelfLayout,
   loadShelfLayout,
   moveShelfItem,
@@ -27,6 +28,7 @@ describe("shelf layout", () => {
       version: 1,
       shelves: {
         read: {
+          stacks: {},
           rows: [{ id: "row:read:0", items: ["book:1", "book:2"] }],
           items: {
             "book:1": expect.objectContaining({
@@ -40,6 +42,7 @@ describe("shelf layout", () => {
           },
         },
         wantToRead: {
+          stacks: {},
           rows: [{ id: "row:wantToRead:0", items: ["book:3"] }],
           items: {
             "book:3": expect.objectContaining({ bookId: 3 }),
@@ -152,6 +155,57 @@ describe("shelf layout", () => {
 
     expect(layout.shelves.read.rows[0]?.items).toEqual(["book:1", "book:2"]);
     expect(preview.shelves.read.rows[0]?.items).toEqual(["book:2", "book:1"]);
+  });
+
+  it("replaces selected row placements with one ordered horizontal stack", () => {
+    const layout = createShelfLayout(bookIds);
+    layout.shelves.read.rows[0]!.items = ["book:2", "book:1"];
+    const stacked = createHorizontalBookStack(layout, "read", ["book:1", "book:2"]);
+
+    expect(stacked.shelves.read.rows[0]?.items).toEqual(["stack:1"]);
+    expect(Object.values(stacked.shelves.read.stacks)).toEqual([
+      {
+        id: "1",
+        rowId: "row:read:0",
+        bookItemIds: ["book:2", "book:1"],
+      },
+    ]);
+    expect(bookItem(stacked, "read", 1).orientation).toBe("horizontal");
+    expect(bookItem(stacked, "read", 2).orientation).toBe("horizontal");
+    expect(layout.shelves.read.rows[0]?.items).toEqual(["book:2", "book:1"]);
+    expect(bookItem(layout, "read", 1).orientation).toBe("vertical");
+  });
+
+  it("reloads a stack with member books excluded from normal row placement", () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout(bookIds),
+      "read",
+      ["book:1", "book:2"],
+    );
+
+    expect(saveShelfLayout(localStorage, "adam", stacked)).toBe(true);
+    const restored = loadOrCreateShelfLayout(localStorage, "adam", bookIds);
+
+    expect(restored.shelves.read.rows[0]?.items).toEqual(["stack:1"]);
+    expect(restored.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:1",
+      "book:2",
+    ]);
+  });
+
+  it("moves a stack placement as one unit", () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2, 4], wantToRead: [] }),
+      "read",
+      ["book:2", "book:4"],
+    );
+    const moved = moveShelfItem(stacked, "read", "stack:1", "book:1");
+
+    expect(moved.shelves.read.rows[0]?.items).toEqual(["stack:1", "book:1"]);
+    expect(moved.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:2",
+      "book:4",
+    ]);
   });
 
   it("does not throw when browser storage is unavailable", () => {

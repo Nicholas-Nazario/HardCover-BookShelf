@@ -18,13 +18,18 @@ import {
   useState,
 } from "react";
 import type { BookPresentation } from "../client/book-presentations";
+import type { BookOrientation } from "../client/shelf-layout";
 import type { ShelfBookDto } from "../client/shelf-api";
 import { bookSpineColor } from "../shared/shelf-colors";
 
-interface BookCardProps {
+export interface BookCardProps {
   book: ShelfBookDto;
   eager?: boolean;
   presentation?: BookPresentation;
+  orientation?: BookOrientation;
+  stackIndex?: number;
+  isStacked?: boolean;
+  stackOffsetRem?: number;
   isEditing?: boolean;
   isSelectedForEditing?: boolean;
   onSelectForEditing?: () => void;
@@ -76,6 +81,10 @@ export function BookCard({
   book,
   eager = false,
   presentation = "cover",
+  orientation = "vertical",
+  stackIndex,
+  isStacked = false,
+  stackOffsetRem = 0,
   isEditing = false,
   isSelectedForEditing = false,
   onSelectForEditing,
@@ -94,7 +103,12 @@ export function BookCard({
     : null;
   const series = book.series[0];
   const readDates = formatReadDates(book.firstReadDate, book.lastReadDate);
-  const cardStyle = bookCardStyle(book, presentation);
+  const cardStyle = {
+    ...bookCardStyle(book, presentation, orientation),
+    ...(isStacked
+      ? { "--stack-offset": `${stackOffsetRem.toFixed(3)}rem` }
+      : {}),
+  };
   const publicationFacts = [
     book.releaseYear === null ? null : String(book.releaseYear),
     book.pages === null
@@ -160,11 +174,16 @@ export function BookCard({
     setIsOpen(false);
   }
 
+  const CardElement = isStacked ? "div" : "li";
+
   return (
-    <li
-      className={`book-card book-card--${presentation}`}
+    <CardElement
+      className={`book-card book-card--${presentation} book-card--${orientation}`}
       data-book-id={book.id}
       data-presentation={presentation}
+      data-orientation={orientation}
+      data-stack-index={stackIndex}
+      data-stacked={isStacked || undefined}
       data-editing={isEditing || undefined}
       data-selected-for-editing={isSelectedForEditing || undefined}
       data-dragging={drag?.isDragging || undefined}
@@ -194,7 +213,7 @@ export function BookCard({
           }
         }}
       >
-        {presentation === "spine" ? (
+        {orientation === "horizontal" || presentation === "spine" ? (
           <SpineArtwork book={book} eager={eager} />
         ) : (
           <CoverArtwork book={book} eager={eager} sizes={SHELF_COVER_SIZES} />
@@ -311,7 +330,7 @@ export function BookCard({
               document.body,
           )
         : null}
-    </li>
+    </CardElement>
   );
 }
 
@@ -615,7 +634,15 @@ export function shouldWrapSpineTitle(
 function bookCardStyle(
   book: ShelfBookDto,
   presentation: BookPresentation,
+  orientation: BookOrientation = "vertical",
 ): BookCardStyle {
+  if (orientation === "horizontal") {
+    return {
+      "--book-width": `calc(var(--shelf-book-height) * ${bookHeightScale(book).toFixed(3)})`,
+      "--book-height": `${bookSpineWidthRem(book).toFixed(3)}rem`,
+      "--book-color": bookSpineColor(book.id),
+    };
+  }
   const width =
     presentation === "spine"
       ? `${bookSpineWidthRem(book).toFixed(3)}rem`

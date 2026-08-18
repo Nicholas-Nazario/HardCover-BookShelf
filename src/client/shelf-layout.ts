@@ -42,6 +42,13 @@ export type ShelfItem = BookShelfItem | SpacerShelfItem | DecorShelfItem;
 export interface ShelfSceneLayout {
   rows: ShelfRow[];
   items: Record<string, ShelfItem>;
+  stacks: Record<string, HorizontalBookStack>;
+}
+
+export interface HorizontalBookStack {
+  id: string;
+  rowId: string;
+  bookItemIds: string[];
 }
 
 export interface ShelfLayout {
@@ -125,6 +132,38 @@ export function updateBookPresentation(
   return changed ? { ...layout, shelves } : layout;
 }
 
+export function updateBookOrientation(
+  layout: ShelfLayout,
+  bookId: number,
+  orientation: BookOrientation,
+): ShelfLayout {
+  const itemId = bookItemId(bookId);
+  let changed = false;
+  const shelves = {} as ShelfLayout["shelves"];
+  for (const shelf of ["read", "wantToRead"] as const) {
+    const scene = layout.shelves[shelf];
+    const item = scene.items[itemId];
+    const isStackMember = Object.values(scene.stacks).some((stack) =>
+      stack.bookItemIds.includes(itemId),
+    );
+    if (
+      !item ||
+      item.kind !== "book" ||
+      item.orientation === orientation ||
+      (isStackMember && orientation !== "horizontal")
+    ) {
+      shelves[shelf] = scene;
+      continue;
+    }
+    changed = true;
+    shelves[shelf] = {
+      ...scene,
+      items: { ...scene.items, [itemId]: { ...item, orientation } },
+    };
+  }
+  return changed ? { ...layout, shelves } : layout;
+}
+
 export function moveShelfItem(
   layout: ShelfLayout,
   shelf: ShelfLayoutShelfName,
@@ -136,7 +175,8 @@ export function moveShelfItem(
   const sourceRow = scene.rows.find((row) => row.items.includes(activeItemId));
   const targetRow = scene.rows.find((row) => row.items.includes(overItemId));
   const item = scene.items[activeItemId];
-  if (!sourceRow || !targetRow || !item) return layout;
+  const stack = stackForPlacementId(scene, activeItemId);
+  if (!sourceRow || !targetRow || (!item && !stack)) return layout;
   const sourceItems = sourceRow.items.filter((id) => id !== activeItemId);
   const targetItems = sourceRow === targetRow ? sourceItems : [...targetRow.items];
   const targetIndex = targetItems.indexOf(overItemId);
@@ -158,7 +198,25 @@ export function moveShelfItem(
       [shelf]: {
         ...scene,
         rows,
-        items: { ...scene.items, [activeItemId]: { ...item, rowId: targetRow.id } },
+        items: stack
+          ? Object.fromEntries(
+              Object.entries(scene.items).map(([itemId, currentItem]) => [
+                itemId,
+                stack.bookItemIds.includes(itemId)
+                  ? { ...currentItem, rowId: targetRow.id }
+                  : currentItem,
+              ]),
+            )
+          : {
+              ...scene.items,
+              [activeItemId]: { ...item!, rowId: targetRow.id },
+            },
+        stacks: stack
+          ? {
+              ...scene.stacks,
+              [stack.id]: { ...stack, rowId: targetRow.id },
+            }
+          : scene.stacks,
       },
     },
   };
@@ -236,6 +294,7 @@ function createScene(
       },
     ],
     items,
+    stacks: {},
   };
 }
 
@@ -246,7 +305,6 @@ function reconcileScene(
 ): ShelfSceneLayout {
   const expectedBookIds = new Set(uniqueBookIds(rawBookIds));
   const items: Record<string, ShelfItem> = {};
-  const rows = scene.rows.map((row) => ({ ...row, items: [...row.items] }));
 
   for (const [itemId, item] of Object.entries(scene.items)) {
     if (item.kind !== "book" || expectedBookIds.has(item.bookId)) {
@@ -254,16 +312,54 @@ function reconcileScene(
     }
   }
 
+  const stacks: Record<string, HorizontalBookStack> = {};
+  const stackMembers = new Set<string>();
+  const dissolvingMembers = new Map<string, string>();
+
+  for (const stack of Object.values(scene.stacks)) {
+    const bookItemIds = stack.bookItemIds.filter((itemId) => {
+      const item = items[itemId];
+      return item?.kind === "book";
+    });
+    const placementId = stackPlacementId(stack.id);
+
+    if (bookItemIds.length >= 2) {
+      stacks[stack.id] = { ...stack, bookItemIds };
+      bookItemIds.forEach((itemId) => stackMembers.add(itemId));
+    } else if (bookItemIds.length === 1) {
+      dissolvingMembers.set(placementId, bookItemIds[0]!);
+    }
+  }
+
+  const rows = scene.rows.map((row) => ({
+    ...row,
+    items: row.items.flatMap((placementId) => {
+      const dissolvedMember = dissolvingMembers.get(placementId);
+      if (dissolvedMember) {
+        items[dissolvedMember] = { ...items[dissolvedMember]!, rowId: row.id };
+        return [dissolvedMember];
+      }
+
+      const stack = stackForPlacementId({ ...scene, stacks }, placementId);
+      if (stack) {
+        stack.rowId = row.id;
+        for (const memberId of stack.bookItemIds) {
+          items[memberId] = { ...items[memberId]!, rowId: row.id };
+        }
+        return [placementId];
+      }
+
+      return items[placementId] && !stackMembers.has(placementId)
+        ? [placementId]
+        : [];
+    }),
+  }));
+
   const knownBookIds = new Set(
     Object.values(items)
       .filter((item): item is BookShelfItem => item.kind === "book")
       .map((item) => item.bookId),
   );
-  const retainedItemIds = new Set(Object.keys(items));
-
-  for (const row of rows) {
-    row.items = row.items.filter((itemId) => retainedItemIds.has(itemId));
-  }
 
   const destinationRow = rows.at(-1) ?? {
     id: initialRowId(shelf),
@@ -284,7 +380,77 @@ function reconcileScene(
     destinationRow.items.push(item.id);
   }
 
-  return { rows, items };
+  return { rows, items, stacks };
+}
+
+export function createHorizontalBookStack(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  bookItemIds: readonly string[],
+): ShelfLayout {
+  const scene = layout.shelves[shelf];
+  const requestedIds = new Set(bookItemIds);
+  const orderedIds = scene.rows.flatMap((row) =>
+    row.items.filter((itemId) => requestedIds.has(itemId)),
+  );
+
+  if (
+    orderedIds.length < 2 ||
+    orderedIds.length !== requestedIds.size ||
+    orderedIds.some((itemId) => scene.items[itemId]?.kind !== "book")
+  ) {
+    return layout;
+  }
+
+  const firstPlacement = scene.rows
+    .map((row, rowIndex) => ({
+      row,
+      rowIndex,
+      itemIndex: row.items.findIndex((itemId) => requestedIds.has(itemId)),
+    }))
+    .find(({ itemIndex }) => itemIndex >= 0);
+
+  if (!firstPlacement) return layout;
+
+  const id = nextStackId(scene.stacks);
+  const placementId = stackPlacementId(id);
+  const rows = scene.rows.map((row, rowIndex) => {
+    const items = row.items.filter((itemId) => !requestedIds.has(itemId));
+    if (rowIndex === firstPlacement.rowIndex) {
+      items.splice(firstPlacement.itemIndex, 0, placementId);
+    }
+    return { ...row, items };
+  });
+  const memberItems = Object.fromEntries(
+    orderedIds.map((itemId) => [
+      itemId,
+      {
+        ...scene.items[itemId]!,
+        rowId: firstPlacement.row.id,
+        orientation: "horizontal" as const,
+      },
+    ]),
+  );
+
+  return {
+    ...layout,
+    shelves: {
+      ...layout.shelves,
+      [shelf]: {
+        ...scene,
+        rows,
+        items: { ...scene.items, ...memberItems },
+        stacks: {
+          ...scene.stacks,
+          [id]: {
+            id,
+            rowId: firstPlacement.row.id,
+            bookItemIds: orderedIds,
+          },
+        },
+      },
+    },
+  };
 }
 
 function createBookItem(
@@ -306,7 +472,17 @@ function createBookItem(
 function parseShelfLayout(stored: string): ShelfLayout | null {
   try {
     const parsed: unknown = JSON.parse(stored);
-    return isShelfLayout(parsed) ? parsed : null;
+    if (!isRecord(parsed) || parsed.version !== 1 || !isRecord(parsed.shelves)) {
+      return null;
+    }
+    const normalized = {
+      ...parsed,
+      shelves: {
+        read: normalizeStoredScene(parsed.shelves.read),
+        wantToRead: normalizeStoredScene(parsed.shelves.wantToRead),
+      },
+    };
+    return isShelfLayout(normalized) ? normalized : null;
   } catch {
     return null;
   }
@@ -324,13 +500,18 @@ function isShelfLayout(value: unknown): value is ShelfLayout {
 }
 
 function isShelfSceneLayout(value: unknown): value is ShelfSceneLayout {
-  if (!isRecord(value) || !Array.isArray(value.rows) || !isRecord(value.items)) {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.rows) ||
+    !isRecord(value.items) ||
+    !isRecord(value.stacks)
+  ) {
     return false;
   }
 
   const rowIds = new Set<string>();
-  const itemIds = new Set<string>();
-  const itemRows = new Map<string, string>();
+  const placementIds = new Set<string>();
+  const placementRows = new Map<string, string>();
 
   for (const row of value.rows) {
     if (
@@ -343,27 +524,100 @@ function isShelfSceneLayout(value: unknown): value is ShelfSceneLayout {
     }
 
     const rowItems = row.items;
-    if (!Array.isArray(rowItems) || !isStringIdList(rowItems, itemIds)) {
+    if (!Array.isArray(rowItems) || !isStringIdList(rowItems, placementIds)) {
       return false;
     }
 
     rowIds.add(row.id);
     for (const itemId of rowItems) {
-      itemIds.add(itemId);
-      itemRows.set(itemId, row.id);
+      placementIds.add(itemId);
+      placementRows.set(itemId, row.id);
     }
   }
 
-  const entries = Object.entries(value.items);
-  if (entries.length !== itemIds.size) {
-    return false;
+  const stackMemberIds = new Set<string>();
+  const stackMemberRows = new Map<string, string>();
+  for (const [stackId, stack] of Object.entries(value.stacks)) {
+    if (!isHorizontalBookStack(stack, stackId, rowIds)) return false;
+
+    const placementId = stackPlacementId(stackId);
+    if (
+      !placementIds.has(placementId) ||
+      placementRows.get(placementId) !== stack.rowId
+    ) {
+      return false;
+    }
+
+    for (const memberId of stack.bookItemIds) {
+      if (!value.items[memberId] || stackMemberIds.has(memberId)) return false;
+      stackMemberIds.add(memberId);
+      stackMemberRows.set(memberId, stack.rowId);
+    }
   }
 
-  return entries.every(([itemId, item]) =>
-    itemIds.has(itemId) &&
-    isShelfItem(item, itemId, rowIds) &&
-    item.rowId === itemRows.get(itemId),
+  for (const placementId of placementIds) {
+    if (placementId.startsWith("stack:")) {
+      if (!value.stacks[placementId.slice("stack:".length)]) return false;
+    } else if (!value.items[placementId]) {
+      return false;
+    }
+  }
+
+  return Object.entries(value.items).every(([itemId, item]) => {
+    if (!isShelfItem(item, itemId, rowIds)) return false;
+
+    if (stackMemberIds.has(itemId)) {
+      return (
+        item.kind === "book" &&
+        item.orientation === "horizontal" &&
+        !placementIds.has(itemId) &&
+        item.rowId === stackMemberRows.get(itemId)
+      );
+    }
+
+    return placementIds.has(itemId) && item.rowId === placementRows.get(itemId);
+  });
+}
+
+function isHorizontalBookStack(
+  value: unknown,
+  stackId: string,
+  rowIds: ReadonlySet<string>,
+): value is HorizontalBookStack {
+  return (
+    isRecord(value) &&
+    value.id === stackId &&
+    stackId.length > 0 &&
+    !stackId.includes(":") &&
+    typeof value.rowId === "string" &&
+    rowIds.has(value.rowId) &&
+    Array.isArray(value.bookItemIds) &&
+    value.bookItemIds.length >= 2 &&
+    isStringIdList(value.bookItemIds, new Set())
   );
+}
+
+function normalizeStoredScene(value: unknown): unknown {
+  return isRecord(value) ? { ...value, stacks: value.stacks ?? {} } : value;
+}
+
+function stackPlacementId(stackId: string): string {
+  return `stack:${stackId}`;
+}
+
+function stackForPlacementId(
+  scene: Pick<ShelfSceneLayout, "stacks">,
+  placementId: string,
+): HorizontalBookStack | undefined {
+  return placementId.startsWith("stack:")
+    ? scene.stacks[placementId.slice("stack:".length)]
+    : undefined;
+}
+
+function nextStackId(stacks: Record<string, HorizontalBookStack>): string {
+  let candidate = 1;
+  while (stacks[String(candidate)]) candidate += 1;
+  return String(candidate);
 }
 
 function isStringIdList(value: unknown[], existingIds: ReadonlySet<string>): boolean {
