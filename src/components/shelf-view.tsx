@@ -1,6 +1,6 @@
 "use client";
 
-import { ArrowLeft, RefreshCw, Settings, X } from "lucide-react";
+import { ArrowLeft, Pencil, RefreshCw, Settings, X } from "lucide-react";
 import {
   type KeyboardEvent,
   type MouseEvent,
@@ -53,6 +53,8 @@ export function ShelfView({
     useState<BookPresentationPreferences>({});
   const [activeTheme, setActiveTheme] = useState<ShelfThemeName>(theme);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isEditMode, setIsEditMode] = useState(false);
+  const [selectedBookId, setSelectedBookId] = useState<number | null>(null);
   const readTab = useRef<HTMLButtonElement>(null);
   const wantToReadTab = useRef<HTMLButtonElement>(null);
   const settingsTrigger = useRef<HTMLButtonElement>(null);
@@ -137,6 +139,8 @@ export function ShelfView({
     setRefreshMessage(null);
     setRefreshError(null);
     setBookPresentations({});
+    setIsEditMode(false);
+    setSelectedBookId(null);
     refreshController.current?.abort();
     refreshController.current = null;
 
@@ -253,6 +257,11 @@ export function ShelfView({
     });
   }
 
+  function toggleEditMode() {
+    setIsEditMode((editing) => !editing);
+    setSelectedBookId(null);
+  }
+
   function handleTabKeyDown(
     event: KeyboardEvent<HTMLButtonElement>,
     shelf: ShelfName,
@@ -323,12 +332,16 @@ export function ShelfView({
 
   const readTabLabel = `Read (${snapshot.shelves.read.length})`;
   const wantToReadTabLabel = `Want to Read (${snapshot.shelves.wantToRead.length})`;
+  const selectedBook = [...snapshot.shelves.read, ...snapshot.shelves.wantToRead].find(
+    (book) => book.id === selectedBookId,
+  );
 
   return (
     <article
       className="shelf-page"
       data-shelf-theme={activeTheme}
       data-shelf-overlays={shelfOverlays}
+      data-edit-mode={isEditMode || undefined}
       style={themeConfig.properties}
     >
       <h1 className="visually-hidden">
@@ -336,7 +349,71 @@ export function ShelfView({
         bookshelf
       </h1>
 
-      <header className="shelf-toolbar">
+      <header
+        className={`shelf-toolbar${isEditMode ? " shelf-toolbar--editing" : ""}`}
+      >
+        {isEditMode ? (
+          <>
+            <div className="shelf-edit-toolbar-copy">
+              <span>Editing shelf</span>
+              <small>
+                {selectedBook
+                  ? `Appearance for ${selectedBook.title}`
+                  : "Select a book"}
+              </small>
+            </div>
+            <div className="shelf-edit-toolbar-controls">
+              {selectedBook ? (
+                <fieldset>
+                  <legend className="visually-hidden">
+                    Appearance for {selectedBook.title}
+                  </legend>
+                  <div className="book-presentation-options">
+                    {(["cover", "spine"] as const).map((presentation) => (
+                      <label
+                        key={presentation}
+                        data-selected={
+                          (bookPresentations[selectedBook.id] ?? "cover") ===
+                          presentation
+                        }
+                      >
+                        <input
+                          type="radio"
+                          name="selected-book-presentation"
+                          value={presentation}
+                          checked={
+                            (bookPresentations[selectedBook.id] ?? "cover") ===
+                            presentation
+                          }
+                          onChange={() =>
+                            selectBookPresentation(selectedBook.id, presentation)
+                          }
+                        />
+                        <span>
+                          {presentation === "cover" ? "Cover" : "Spine"}
+                        </span>
+                      </label>
+                    ))}
+                  </div>
+                </fieldset>
+              ) : (
+                <span className="shelf-edit-toolbar-hint">
+                  Choose a book below
+                </span>
+              )}
+            </div>
+            <div className="shelf-toolbar-actions">
+              <button
+                className="shelf-action-button shelf-edit-mode-button"
+                type="button"
+                onClick={toggleEditMode}
+              >
+                Done
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
         <a
           className="shelf-profile-control"
           href="/"
@@ -406,7 +483,18 @@ export function ShelfView({
           >
             <Settings aria-hidden="true" />
           </button>
+          <button
+            className="shelf-action-button shelf-edit-mode-button"
+            type="button"
+            aria-label="Edit"
+            title="Edit shelf appearance"
+            onClick={toggleEditMode}
+          >
+            <Pencil aria-hidden="true" />
+          </button>
         </div>
+          </>
+        )}
       </header>
 
       {isSettingsOpen ? (
@@ -505,7 +593,9 @@ export function ShelfView({
         shelfLabel="Read"
         books={snapshot.shelves.read}
         bookPresentations={bookPresentations}
-        onBookPresentationChange={selectBookPresentation}
+        isEditing={isEditMode}
+        selectedBookId={selectedBookId}
+        onSelectBookForEditing={setSelectedBookId}
         hidden={selectedShelf !== "read"}
       />
       <ShelfPanel
@@ -514,7 +604,9 @@ export function ShelfView({
         shelfLabel="Want to Read"
         books={snapshot.shelves.wantToRead}
         bookPresentations={bookPresentations}
-        onBookPresentationChange={selectBookPresentation}
+        isEditing={isEditMode}
+        selectedBookId={selectedBookId}
+        onSelectBookForEditing={setSelectedBookId}
         hidden={selectedShelf !== "wantToRead"}
       />
     </article>
@@ -527,10 +619,9 @@ interface ShelfPanelProps {
   shelfLabel: string;
   books: ShelfSnapshotDto["shelves"]["read"];
   bookPresentations: BookPresentationPreferences;
-  onBookPresentationChange: (
-    bookId: number,
-    presentation: BookPresentation,
-  ) => void;
+  isEditing: boolean;
+  selectedBookId: number | null;
+  onSelectBookForEditing: (bookId: number) => void;
   hidden: boolean;
 }
 
@@ -540,7 +631,9 @@ function ShelfPanel({
   shelfLabel,
   books,
   bookPresentations,
-  onBookPresentationChange,
+  isEditing,
+  selectedBookId,
+  onSelectBookForEditing,
   hidden,
 }: ShelfPanelProps) {
   return (
@@ -560,9 +653,9 @@ function ShelfPanel({
               book={book}
               eager={index < 8}
               presentation={bookPresentations[book.id] ?? "cover"}
-              onPresentationChange={(presentation) =>
-                onBookPresentationChange(book.id, presentation)
-              }
+              isEditing={isEditing}
+              isSelectedForEditing={selectedBookId === book.id}
+              onSelectForEditing={() => onSelectBookForEditing(book.id)}
             />
           ))}
         </ul>

@@ -75,7 +75,6 @@ describe("BookCard", () => {
 
   it("switches between a variable-width cover and generated spine", async () => {
     const user = userEvent.setup();
-    const onPresentationChange = vi.fn();
     const value = book({
       pages: 432,
       cover: {
@@ -89,7 +88,6 @@ describe("BookCard", () => {
         <BookCard
           book={value}
           presentation="cover"
-          onPresentationChange={onPresentationChange}
         />
       </ul>,
     );
@@ -102,17 +100,14 @@ describe("BookCard", () => {
     expect(card.querySelector(".book-spine")).toBeNull();
 
     await user.click(screen.getByRole("button", { name: /Open details/ }));
-    expect((screen.getByRole("radio", { name: "Cover" }) as HTMLInputElement).checked)
-      .toBe(true);
-    await user.click(screen.getByRole("radio", { name: "Spine" }));
-    expect(onPresentationChange).toHaveBeenCalledWith("spine");
+    expect(screen.queryByRole("radio", { name: "Cover" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
 
     view.rerender(
       <ul>
         <BookCard
           book={value}
           presentation="spine"
-          onPresentationChange={onPresentationChange}
         />
       </ul>,
     );
@@ -132,8 +127,7 @@ describe("BookCard", () => {
     expect(card.style.getPropertyValue("--book-height")).toContain(
       bookHeightScale(value).toFixed(3),
     );
-    expect((screen.getByRole("radio", { name: "Spine" }) as HTMLInputElement).checked)
-      .toBe(true);
+    expect(screen.queryByRole("radio", { name: "Spine" })).toBeNull();
     expect(screen.getByRole("dialog").querySelector(".book-cover")).toBeTruthy();
   });
 

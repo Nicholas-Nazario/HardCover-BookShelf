@@ -232,6 +232,10 @@ p {
   transform: translateX(-50%);
 }
 
+.shelf-toolbar--editing {
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+}
+
 .shelf-profile-control {
   display: flex;
   min-width: 0;
@@ -341,6 +345,16 @@ p {
   cursor: pointer;
 }
 
+.shelf-edit-mode-button {
+  font-size: 0.75rem;
+  font-weight: 800;
+}
+
+.shelf-toolbar--editing .shelf-edit-mode-button {
+  width: auto;
+  padding: 0 0.65rem;
+}
+
 .shelf-action-button:hover:not(:disabled) {
   background: var(--shelf-control-hover);
 }
@@ -429,6 +443,55 @@ p {
   list-style: none;
 }
 
+.shelf-edit-toolbar-copy {
+  display: grid;
+  min-width: 0;
+  align-content: center;
+  padding: 0.45rem 0.65rem;
+  line-height: 1.1;
+}
+
+.shelf-edit-toolbar-copy > span {
+  overflow: hidden;
+  font-size: 0.82rem;
+  font-weight: 720;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-edit-toolbar-copy small {
+  overflow: hidden;
+  margin-top: 0.2rem;
+  color: var(--shelf-text-muted);
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.shelf-edit-toolbar-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+}
+
+.shelf-edit-toolbar-controls fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.shelf-edit-toolbar-hint {
+  color: var(--shelf-text-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.shelf-edit-toolbar-controls .book-presentation-options {
+  width: 12rem;
+}
+
 .bookshelf::before {
   content: none;
 }
@@ -481,6 +544,19 @@ p {
   z-index: 2;
   filter: brightness(1.05) saturate(1.04);
   transform: translateY(-0.7rem) scale(1.025);
+}
+
+.book-card[data-editing="true"] .book-cover-button {
+  cursor: pointer;
+}
+
+.book-card[data-editing="true"] .book-cover-button:hover {
+  filter: brightness(1.12) saturate(1.08);
+}
+
+.book-card[data-selected-for-editing="true"] .book-cover-button {
+  outline: 3px solid var(--shelf-focus);
+  outline-offset: 4px;
 }
 
 .book-cover-button:focus-visible,
@@ -1021,22 +1097,6 @@ p {
   font-size: 1.05rem;
 }
 
-.book-presentation-fieldset {
-  min-width: 0;
-  margin: 0 0 1.35rem;
-  padding: 0;
-  border: 0;
-}
-
-.book-presentation-fieldset legend {
-  margin-bottom: 0.45rem;
-  color: var(--shelf-detail-muted);
-  font-size: 0.67rem;
-  font-weight: 800;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
 .book-presentation-options {
   display: grid;
   width: min(15rem, 100%);
@@ -1185,6 +1245,10 @@ p {
   .shelf-toolbar {
     width: calc(100% - 1rem);
     grid-template-columns: auto minmax(0, 1fr) auto;
+  }
+
+  .shelf-toolbar--editing {
+    grid-template-columns: minmax(0, 1fr) auto auto;
   }
 
   .shelf-profile-copy {

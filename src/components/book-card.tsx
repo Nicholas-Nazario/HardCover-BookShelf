@@ -21,7 +21,9 @@ interface BookCardProps {
   book: ShelfBookDto;
   eager?: boolean;
   presentation?: BookPresentation;
-  onPresentationChange?: (presentation: BookPresentation) => void;
+  isEditing?: boolean;
+  isSelectedForEditing?: boolean;
+  onSelectForEditing?: () => void;
 }
 
 interface CoverArtworkProps {
@@ -63,7 +65,9 @@ export function BookCard({
   book,
   eager = false,
   presentation = "cover",
-  onPresentationChange,
+  isEditing = false,
+  isSelectedForEditing = false,
+  onSelectForEditing,
 }: BookCardProps) {
   const [isOpen, setIsOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -97,7 +101,7 @@ export function BookCard({
 
     function closeOnEscape(event: globalThis.KeyboardEvent) {
       if (event.key === "Escape") {
-        setIsOpen(false);
+        closeDetails();
         return;
       }
 
@@ -136,8 +140,12 @@ export function BookCard({
 
   function closeFromBackdrop(event: MouseEvent<HTMLDivElement>) {
     if (event.target === event.currentTarget) {
-      setIsOpen(false);
+      closeDetails();
     }
+  }
+
+  function closeDetails() {
+    setIsOpen(false);
   }
 
   return (
@@ -145,6 +153,8 @@ export function BookCard({
       className={`book-card book-card--${presentation}`}
       data-book-id={book.id}
       data-presentation={presentation}
+      data-editing={isEditing || undefined}
+      data-selected-for-editing={isSelectedForEditing || undefined}
       style={cardStyle}
       aria-label={label}
     >
@@ -152,9 +162,20 @@ export function BookCard({
         ref={trigger}
         className="book-cover-button"
         type="button"
-        aria-label={`Open details for ${label}`}
-        aria-haspopup="dialog"
-        onClick={() => setIsOpen(true)}
+        aria-label={
+          isEditing
+            ? `Select ${label} for appearance editing`
+            : `Open details for ${label}`
+        }
+        aria-haspopup={isEditing ? undefined : "dialog"}
+        aria-pressed={isEditing ? isSelectedForEditing : undefined}
+        onClick={() => {
+          if (isEditing) {
+            onSelectForEditing?.();
+          } else {
+            setIsOpen(true);
+          }
+        }}
       >
         {presentation === "spine" ? (
           <SpineArtwork book={book} eager={eager} />
@@ -182,7 +203,7 @@ export function BookCard({
                   className="book-dialog-close"
                   type="button"
                   aria-label={`Close details for ${book.title}`}
-                  onClick={() => setIsOpen(false)}
+                  onClick={closeDetails}
                 >
                   <X aria-hidden="true" />
                 </button>
@@ -206,29 +227,6 @@ export function BookCard({
                   <p className="book-dialog-authors">
                     {formatAuthors(book.authors)}
                   </p>
-
-                  <fieldset className="book-presentation-fieldset">
-                    <legend>Shelf appearance</legend>
-                    <div className="book-presentation-options">
-                      {(["cover", "spine"] as const).map((option) => (
-                        <label
-                          key={option}
-                          data-selected={presentation === option}
-                        >
-                          <input
-                            type="radio"
-                            name={`book-presentation-${generatedId}`}
-                            value={option}
-                            checked={presentation === option}
-                            onChange={() => onPresentationChange?.(option)}
-                          />
-                          <span>
-                            {option === "cover" ? "Cover" : "Spine"}
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </fieldset>
 
                   {book.communityRating !== null || book.userRating !== null ? (
                     <div className="book-rating-grid" aria-label="Book ratings">
