@@ -453,6 +453,237 @@ export function createHorizontalBookStack(
   };
 }
 
+export function unstackHorizontalBookStack(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  stackId: string,
+): ShelfLayout {
+  const scene = layout.shelves[shelf];
+  const stack = scene.stacks[stackId];
+  if (!stack) return layout;
+
+  const placementId = stackPlacementId(stack.id);
+  const sourceRow = scene.rows.find((row) => row.items.includes(placementId));
+  if (!sourceRow) return layout;
+
+  const rows = scene.rows.map((row) =>
+    row.id === sourceRow.id
+      ? {
+          ...row,
+          items: row.items.flatMap((itemId) =>
+            itemId === placementId ? stack.bookItemIds : [itemId],
+          ),
+        }
+      : row,
+  );
+  const stacks = { ...scene.stacks };
+  delete stacks[stack.id];
+
+  return replaceShelfScene(layout, shelf, {
+    ...scene,
+    rows,
+    items: updateBookItemRows(scene.items, stack.bookItemIds, sourceRow.id),
+    stacks,
+  });
+}
+
+export function addBookToHorizontalStack(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  stackId: string,
+  bookItemId: string,
+  memberIndex?: number,
+): ShelfLayout {
+  const scene = layout.shelves[shelf];
+  const stack = scene.stacks[stackId];
+  const bookItem = scene.items[bookItemId];
+  const sourceRow = scene.rows.find((row) => row.items.includes(bookItemId));
+
+  if (
+    !stack ||
+    !sourceRow ||
+    bookItem?.kind !== "book" ||
+    bookItem.orientation !== "horizontal" ||
+    stack.bookItemIds.includes(bookItemId)
+  ) {
+    return layout;
+  }
+
+  const insertionIndex = clampIndex(
+    memberIndex ?? stack.bookItemIds.length,
+    stack.bookItemIds.length,
+  );
+  const bookItemIds = [...stack.bookItemIds];
+  bookItemIds.splice(insertionIndex, 0, bookItemId);
+
+  return replaceShelfScene(layout, shelf, {
+    ...scene,
+    rows: scene.rows.map((row) =>
+      row.id === sourceRow.id
+        ? { ...row, items: row.items.filter((itemId) => itemId !== bookItemId) }
+        : row,
+    ),
+    items: {
+      ...scene.items,
+      [bookItemId]: { ...bookItem, rowId: stack.rowId },
+    },
+    stacks: {
+      ...scene.stacks,
+      [stack.id]: { ...stack, bookItemIds },
+    },
+  });
+}
+
+export function removeBookFromHorizontalStack(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  stackId: string,
+  bookItemId: string,
+  overPlacementId: string,
+): ShelfLayout {
+  const scene = layout.shelves[shelf];
+  const targetRow = scene.rows.find((row) =>
+    row.items.includes(overPlacementId),
+  );
+
+  if (!targetRow || overPlacementId.startsWith("stack:")) {
+    return layout;
+  }
+
+  return removeBookFromStackAtPosition(
+    layout,
+    shelf,
+    stackId,
+    bookItemId,
+    targetRow.id,
+    overPlacementId,
+  );
+}
+
+export function removeBookFromHorizontalStackToRowEnd(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  stackId: string,
+  bookItemId: string,
+  targetRowId: string,
+): ShelfLayout {
+  return removeBookFromStackAtPosition(
+    layout,
+    shelf,
+    stackId,
+    bookItemId,
+    targetRowId,
+    null,
+  );
+}
+
+function removeBookFromStackAtPosition(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  stackId: string,
+  bookItemId: string,
+  targetRowId: string,
+  overPlacementId: string | null,
+): ShelfLayout {
+  const scene = layout.shelves[shelf];
+  const stack = scene.stacks[stackId];
+  const bookItem = scene.items[bookItemId];
+  const targetRow = scene.rows.find((row) => row.id === targetRowId);
+
+  if (
+    !stack ||
+    bookItem?.kind !== "book" ||
+    !stack.bookItemIds.includes(bookItemId) ||
+    !targetRow
+  ) {
+    return layout;
+  }
+
+  const remainingMemberIds = stack.bookItemIds.filter(
+    (itemId) => itemId !== bookItemId,
+  );
+  const stackPlacement = stackPlacementId(stack.id);
+  const stacks = { ...scene.stacks };
+  const rowsAfterRemoval = scene.rows.map((row) => {
+    if (!row.items.includes(stackPlacement)) return row;
+
+    return {
+      ...row,
+      items: row.items.flatMap((placementId) => {
+        if (placementId !== stackPlacement) return [placementId];
+        return remainingMemberIds.length === 1
+          ? [remainingMemberIds[0]!]
+          : [stackPlacement];
+      }),
+    };
+  });
+
+  if (remainingMemberIds.length === 1) {
+    delete stacks[stack.id];
+  } else {
+    stacks[stack.id] = { ...stack, bookItemIds: remainingMemberIds };
+  }
+
+  const currentTargetRow = rowsAfterRemoval.find(
+    (row) => row.id === targetRow.id,
+  );
+  const targetIndex = overPlacementId
+    ? currentTargetRow?.items.indexOf(overPlacementId) ?? -1
+    : currentTargetRow?.items.length ?? -1;
+  if (!currentTargetRow || targetIndex < 0) return layout;
+
+  const targetItems = [...currentTargetRow.items];
+  targetItems.splice(targetIndex, 0, bookItemId);
+  const rows = rowsAfterRemoval.map((row) =>
+    row.id === currentTargetRow.id ? { ...row, items: targetItems } : row,
+  );
+  let items = {
+    ...scene.items,
+    [bookItemId]: { ...bookItem, rowId: currentTargetRow.id },
+  };
+
+  if (remainingMemberIds.length === 1) {
+    items = updateBookItemRows(items, remainingMemberIds, stack.rowId);
+  }
+
+  return replaceShelfScene(layout, shelf, {
+    ...scene,
+    rows,
+    items,
+    stacks,
+  });
+}
+
+function replaceShelfScene(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  scene: ShelfSceneLayout,
+): ShelfLayout {
+  return {
+    ...layout,
+    shelves: { ...layout.shelves, [shelf]: scene },
+  };
+}
+
+function updateBookItemRows(
+  items: Record<string, ShelfItem>,
+  bookItemIds: readonly string[],
+  rowId: string,
+): Record<string, ShelfItem> {
+  const updatedItems = { ...items };
+  for (const itemId of bookItemIds) {
+    const item = updatedItems[itemId];
+    if (item?.kind === "book") {
+      updatedItems[itemId] = { ...item, rowId, orientation: "horizontal" };
+    }
+  }
+  return updatedItems;
+}
+
+function clampIndex(index: number, length: number): number {
+  return Math.min(Math.max(Math.trunc(index), 0), length);
+}
+
 function createBookItem(
   bookId: number,
   rowId: string,

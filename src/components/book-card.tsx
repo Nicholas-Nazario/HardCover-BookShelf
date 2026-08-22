@@ -39,6 +39,8 @@ export interface BookCardProps {
     setNodeRef: (node: HTMLElement | null) => void;
     isDragging: boolean;
     isDropPreview: boolean;
+    handleLabel?: string;
+    handleOnly?: boolean;
   };
 }
 
@@ -203,8 +205,8 @@ export function BookCard({
         }
         aria-haspopup={isEditing ? undefined : "dialog"}
         aria-pressed={isEditing ? isSelectedForEditing : undefined}
-        {...drag?.attributes}
-        {...drag?.listeners}
+        {...(!drag?.handleOnly ? drag?.attributes : undefined)}
+        {...(!drag?.handleOnly ? drag?.listeners : undefined)}
         onClick={() => {
           if (isEditing) {
             onSelectForEditing?.();
@@ -219,6 +221,19 @@ export function BookCard({
           <CoverArtwork book={book} eager={eager} sizes={SHELF_COVER_SIZES} />
         )}
       </button>
+
+      {drag?.handleOnly ? (
+        <button
+          className="book-drag-handle"
+          type="button"
+          aria-label={drag.handleLabel ?? `Move ${label}`}
+          title={drag.handleLabel ?? `Move ${label}`}
+          {...drag.attributes}
+          {...drag.listeners}
+        >
+          <span aria-hidden="true">↕</span>
+        </button>
+      ) : null}
 
       {isOpen
         ? createPortal(

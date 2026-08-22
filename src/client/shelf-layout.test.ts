@@ -3,15 +3,19 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { bookPresentationStorageKey } from "./book-presentations";
 import {
+  addBookToHorizontalStack,
   createShelfLayout,
   createHorizontalBookStack,
   loadOrCreateShelfLayout,
   loadShelfLayout,
   moveShelfItem,
   reconcileShelfLayout,
+  removeBookFromHorizontalStack,
+  removeBookFromHorizontalStackToRowEnd,
   saveShelfLayout,
   shelfLayoutStorageKey,
   updateBookPresentation,
+  unstackHorizontalBookStack,
   type BookShelfItem,
   type ShelfLayout,
 } from "./shelf-layout";
@@ -206,6 +210,171 @@ describe("shelf layout", () => {
       "book:2",
       "book:4",
     ]);
+  });
+
+  it("unstacks members in order at the stack placement", () => {
+    const layout = createShelfLayout({ read: [1, 2, 4], wantToRead: [] });
+    layout.shelves.read.rows[0]!.items = ["book:4", "book:2", "book:1"];
+    const stacked = createHorizontalBookStack(layout, "read", ["book:2", "book:1"]);
+    const unstacked = unstackHorizontalBookStack(stacked, "read", "1");
+
+    expect(stacked.shelves.read.rows[0]?.items).toEqual(["book:4", "stack:1"]);
+    expect(unstacked.shelves.read.rows[0]?.items).toEqual([
+      "book:4",
+      "book:2",
+      "book:1",
+    ]);
+    expect(unstacked.shelves.read.stacks).toEqual({});
+    expect(bookItem(unstacked, "read", 1).orientation).toBe("horizontal");
+    expect(bookItem(unstacked, "read", 2).orientation).toBe("horizontal");
+  });
+
+  it("adds only an unstacked horizontal book at the resolved member position", () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2, 4], wantToRead: [] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+
+    expect(
+      addBookToHorizontalStack(stacked, "read", "1", "book:4", 1),
+    ).toBe(stacked);
+
+    bookItem(stacked, "read", 4).orientation = "horizontal";
+    const added = addBookToHorizontalStack(
+      stacked,
+      "read",
+      "1",
+      "book:4",
+      1,
+    );
+
+    expect(added.shelves.read.rows[0]?.items).toEqual(["stack:1"]);
+    expect(added.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:1",
+      "book:4",
+      "book:2",
+    ]);
+    expect(stacked.shelves.read.rows[0]?.items).toEqual([
+      "stack:1",
+      "book:4",
+    ]);
+  });
+
+  it("removes a member to a row placement and preserves the remaining stack order", () => {
+    const layout = createShelfLayout({ read: [1, 2, 4, 5], wantToRead: [] });
+    const stacked = createHorizontalBookStack(
+      layout,
+      "read",
+      ["book:1", "book:2", "book:4"],
+    );
+    const removed = removeBookFromHorizontalStack(
+      stacked,
+      "read",
+      "1",
+      "book:2",
+      "book:5",
+    );
+
+    expect(removed.shelves.read.rows[0]?.items).toEqual([
+      "stack:1",
+      "book:2",
+      "book:5",
+    ]);
+    expect(removed.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:1",
+      "book:4",
+    ]);
+    expect(bookItem(removed, "read", 2)).toEqual(
+      expect.objectContaining({ rowId: "row:read:0", orientation: "horizontal" }),
+    );
+  });
+
+  it("automatically dissolves a stack when one member remains", () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2, 4], wantToRead: [] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+    const removed = removeBookFromHorizontalStack(
+      stacked,
+      "read",
+      "1",
+      "book:1",
+      "book:4",
+    );
+
+    expect(removed.shelves.read.rows[0]?.items).toEqual([
+      "book:2",
+      "book:1",
+      "book:4",
+    ]);
+    expect(removed.shelves.read.stacks).toEqual({});
+    expect(bookItem(removed, "read", 2).orientation).toBe("horizontal");
+  });
+
+  it("can remove a member at the row end when the stack is the only placement", () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2], wantToRead: [] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+    const removed = removeBookFromHorizontalStackToRowEnd(
+      stacked,
+      "read",
+      "1",
+      "book:1",
+      "row:read:0",
+    );
+
+    expect(removed.shelves.read.rows[0]?.items).toEqual([
+      "book:2",
+      "book:1",
+    ]);
+    expect(removed.shelves.read.stacks).toEqual({});
+    expect(bookItem(removed, "read", 1).orientation).toBe("horizontal");
+  });
+
+  it("persists exact stack edits through reconciliation and reload", () => {
+    let layout = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2, 4], wantToRead: [] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+    bookItem(layout, "read", 4).orientation = "horizontal";
+    layout = addBookToHorizontalStack(layout, "read", "1", "book:4", 1);
+
+    expect(saveShelfLayout(localStorage, "adam", layout)).toBe(true);
+    const restored = loadOrCreateShelfLayout(localStorage, "adam", {
+      read: [1, 2, 4],
+      wantToRead: [],
+    });
+
+    expect(restored.shelves.read.rows[0]?.items).toEqual(["stack:1"]);
+    expect(restored.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:1",
+      "book:4",
+      "book:2",
+    ]);
+  });
+
+  it("dissolves a refreshed stack in place when one imported member remains", () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2], wantToRead: [] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+    const reconciled = reconcileShelfLayout(stacked, {
+      read: [2, 4],
+      wantToRead: [],
+    });
+
+    expect(reconciled.shelves.read.rows[0]?.items).toEqual([
+      "book:2",
+      "book:4",
+    ]);
+    expect(reconciled.shelves.read.stacks).toEqual({});
+    expect(bookItem(reconciled, "read", 2).orientation).toBe("horizontal");
   });
 
   it("does not throw when browser storage is unavailable", () => {

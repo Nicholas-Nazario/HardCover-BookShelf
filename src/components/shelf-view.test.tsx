@@ -1,16 +1,30 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  createHorizontalBookStack,
   createShelfLayout,
   loadShelfLayout,
   saveShelfLayout,
 } from "../client/shelf-layout";
 import { SHELF_THEME_COOKIE_NAME } from "../shared/shelf-themes";
 import { bookSpineWidthRem } from "./book-card";
-import { ShelfView } from "./shelf-view";
+import { stackMemberDragId } from "./horizontal-book-stack";
+import {
+  applyShelfDragOperation,
+  createShelfDragPreview,
+  ShelfView,
+} from "./shelf-view";
 
 const emptyBookMetadata = {
   slug: null,
@@ -439,6 +453,185 @@ describe("ShelfView", () => {
       "vertical",
       "horizontal",
     ]);
+  });
+
+  it("routes horizontal stack drops by member position and rejects vertical books", () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2, 4, 5], wantToRead: [] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+
+    expect(
+      applyShelfDragOperation(stacked, "read", "book:4", "stack:1"),
+    ).toBe(stacked);
+
+    const fourthItem = stacked.shelves.read.items["book:4"];
+    if (!fourthItem || fourthItem.kind !== "book") {
+      throw new Error("Expected book 4 in the test layout.");
+    }
+    fourthItem.orientation = "horizontal";
+    const added = applyShelfDragOperation(
+      stacked,
+      "read",
+      "book:4",
+      stackMemberDragId("1", "book:2"),
+    );
+
+    expect(added.shelves.read.rows[0]?.items).toEqual([
+      "stack:1",
+      "book:5",
+    ]);
+    expect(added.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:1",
+      "book:4",
+      "book:2",
+    ]);
+
+    const removed = applyShelfDragOperation(
+      added,
+      "read",
+      stackMemberDragId("1", "book:4"),
+      "book:5",
+    );
+    expect(removed.shelves.read.rows[0]?.items).toEqual([
+      "stack:1",
+      "book:4",
+      "book:5",
+    ]);
+    expect(removed.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:1",
+      "book:2",
+    ]);
+
+    const onlyStack = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2], wantToRead: [] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+    const removedAtRowEnd = applyShelfDragOperation(
+      onlyStack,
+      "read",
+      stackMemberDragId("1", "book:1"),
+      `shelf-row-end:${encodeURIComponent("row:read:0")}`,
+    );
+    expect(removedAtRowEnd.shelves.read.rows[0]?.items).toEqual([
+      "book:2",
+      "book:1",
+    ]);
+    expect(removedAtRowEnd.shelves.read.stacks).toEqual({});
+
+    const rowEndPreview = createShelfDragPreview(
+      onlyStack,
+      "read",
+      stackMemberDragId("1", "book:1"),
+      `shelf-row-end:${encodeURIComponent("row:read:0")}`,
+    );
+    expect(rowEndPreview.shelves.read.rows[0]?.items).toEqual([
+      "stack:1",
+      "book:1",
+    ]);
+    expect(rowEndPreview.shelves.read.stacks["1"]?.bookItemIds).toEqual([
+      "book:2",
+    ]);
+  });
+
+  it("offers accessible stack actions and undoes and redoes explicit unstacking", async () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2], wantToRead: [3] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+    saveShelfLayout(localStorage, "adam", stacked);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, snapshot)),
+    );
+    const user = userEvent.setup();
+    render(<ShelfView username="adam" />);
+
+    await screen.findByRole("listitem", { name: "Stack of 2 books" });
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+
+    const stackHandle = screen.getByRole("button", {
+      name: "Move stack of 2 books",
+    });
+    stackHandle.focus();
+    fireEvent.keyDown(stackHandle, { key: " ", code: "Space" });
+    expect(await screen.findByText("Picked up stack of 2 books.")).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+    expect(
+      await screen.findByText("Cancelled moving stack of 2 books."),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: "Move Read Book out of stack" }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole("listitem", { name: "End of shelf row" }),
+    ).toBeTruthy();
+    const memberSelection = screen.getByRole("button", {
+      name: "Select Read Book by First Author, Second Author for appearance editing",
+    });
+    await user.click(memberSelection);
+    expect(screen.getAllByText("Appearance for Read Book")).toHaveLength(2);
+
+    await user.click(screen.getByRole("button", { name: "Unstack books" }));
+    const shelf = screen.getByRole("list", { name: "Read bookshelf" });
+    expect(shelf.querySelector(".book-stack")).toBeNull();
+    expect(
+      Array.from(shelf.querySelectorAll<HTMLElement>(":scope > .book-card")).map(
+        (card) => card.dataset.bookId,
+      ),
+    ).toEqual(["1", "2"]);
+
+    await user.click(screen.getByRole("button", { name: "Undo layout change" }));
+    expect(shelf.querySelector(".book-stack")).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Redo layout change" }));
+    expect(shelf.querySelector(".book-stack")).toBeNull();
+
+    await waitFor(() => {
+      expect(loadShelfLayout(localStorage, "adam")?.shelves.read).toEqual(
+        expect.objectContaining({ stacks: {} }),
+      );
+    });
+  });
+
+  it("cancels a keyboard member drag without changing layout storage", async () => {
+    const stacked = createHorizontalBookStack(
+      createShelfLayout({ read: [1, 2], wantToRead: [3] }),
+      "read",
+      ["book:1", "book:2"],
+    );
+    saveShelfLayout(localStorage, "adam", stacked);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn<typeof fetch>().mockResolvedValue(jsonResponse(200, snapshot)),
+    );
+    const user = userEvent.setup();
+    render(<ShelfView username="adam" />);
+
+    await screen.findByRole("listitem", { name: "Stack of 2 books" });
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    const storedBeforeDrag = localStorage.getItem(
+      "hardcover-shelf:layout:v1:adam",
+    );
+    const memberHandle = screen.getByRole("button", {
+      name: "Move Read Book out of stack",
+    });
+    memberHandle.focus();
+    fireEvent.keyDown(memberHandle, { key: " ", code: "Space" });
+    expect(
+      await screen.findByText("Picked up Read Book from its stack."),
+    ).toBeTruthy();
+    fireEvent.keyDown(document, { key: "Escape", code: "Escape" });
+
+    expect(screen.getByRole("listitem", { name: "Stack of 2 books" })).toBeTruthy();
+    expect(
+      await screen.findByText("Cancelled moving Read Book from its stack."),
+    ).toBeTruthy();
+    expect(localStorage.getItem("hardcover-shelf:layout:v1:adam")).toBe(
+      storedBeforeDrag,
+    );
   });
 
   it("uses subtle icon actions and opens the configured theme settings", async () => {
