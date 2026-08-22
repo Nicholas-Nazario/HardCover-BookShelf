@@ -642,6 +642,97 @@ p {
   padding-bottom: 0;
 }
 
+.book-stack-controls {
+  position: absolute;
+  z-index: 8;
+  right: 0;
+  bottom: calc(
+    var(--stack-shelf-bottom) + var(--stack-height) + 0.35rem
+  );
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.book-stack-drag-handle,
+.book-stack-unstack-button,
+.book-drag-handle {
+  border: 1px solid var(--shelf-toolbar-border);
+  background: var(--shelf-toolbar);
+  box-shadow: 0 0.2rem 0.45rem rgb(0 0 0 / 24%);
+  color: var(--shelf-text);
+  cursor: grab;
+  font: inherit;
+}
+
+.book-stack-drag-handle,
+.book-drag-handle {
+  display: grid;
+  width: 1.65rem;
+  height: 1.65rem;
+  place-items: center;
+  padding: 0;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.book-stack-unstack-button {
+  min-height: 1.65rem;
+  padding: 0.2rem 0.45rem;
+  border-radius: 0.4rem;
+  cursor: pointer;
+  font-size: 0.66rem;
+}
+
+.book-stack-drag-handle:active,
+.book-drag-handle:active {
+  cursor: grabbing;
+}
+
+.book-stack-unstack-button:hover,
+.book-stack-drag-handle:hover,
+.book-drag-handle:hover {
+  border-color: var(--shelf-focus);
+  filter: brightness(1.12);
+}
+
+.book-card[data-stacked="true"] .book-drag-handle {
+  position: absolute;
+  z-index: 6;
+  top: 0.22rem;
+  right: 0.28rem;
+  opacity: 0.82;
+}
+
+.shelf-row-end-drop-target {
+  position: relative;
+  z-index: 1;
+  width: 1.75rem;
+  height: var(--shelf-row-height);
+  flex: 0 0 1.75rem;
+  list-style: none;
+}
+
+.shelf-row-end-drop-target::after {
+  position: absolute;
+  right: 0;
+  bottom: 2.35rem;
+  width: 1.1rem;
+  height: min(7rem, calc(var(--shelf-row-height) - 1rem));
+  border: 2px dashed transparent;
+  border-radius: 0.35rem;
+  background: transparent;
+  content: "";
+  transition:
+    border-color 120ms ease,
+    background-color 120ms ease;
+}
+
+.shelf-row-end-drop-target[data-drop-preview="true"]::after {
+  border-color: var(--shelf-focus);
+  background: color-mix(in srgb, var(--shelf-focus) 18%, transparent);
+}
+
 .book-stack .book-spine {
   box-shadow: none;
 }
@@ -683,6 +774,9 @@ p {
 }
 
 .book-cover-button:focus-visible,
+.book-drag-handle:focus-visible,
+.book-stack-drag-handle:focus-visible,
+.book-stack-unstack-button:focus-visible,
 .shelf-stack-button:focus-visible,
 .book-dialog-close:focus-visible,
 .book-hardcover-link:focus-visible,

@@ -13,6 +13,7 @@ import {
   type DragEndEvent,
   type DragOverEvent,
   type DragStartEvent,
+  type Announcements,
 } from "@dnd-kit/core";
 import {
   type KeyboardEvent,
@@ -23,19 +24,24 @@ import {
 } from "react";
 import { type BookPresentation } from "../client/book-presentations";
 import {
+  addBookToHorizontalStack,
   createShelfLayout,
   createHorizontalBookStack,
   loadOrCreateShelfLayout,
   reconcileShelfLayout,
+  removeBookFromHorizontalStack,
+  removeBookFromHorizontalStackToRowEnd,
   saveShelfLayout,
   type ShelfBookIds,
   type BookShelfItem,
   type HorizontalBookStack as HorizontalBookStackModel,
   type ShelfLayout,
+  type ShelfLayoutShelfName,
   type ShelfSceneLayout,
   moveShelfItem,
   updateBookPresentation,
   updateBookOrientation,
+  unstackHorizontalBookStack,
   type BookOrientation,
 } from "../client/shelf-layout";
 import {
@@ -362,6 +368,14 @@ export function ShelfView({
         selectedShelf,
         selectedBookIds.map((id) => `book:${id}`),
       ),
+    );
+    setSelectedBookId(null);
+    setSelectedBookIds([]);
+  }
+
+  function unstackBooks(shelf: ShelfName, stackId: string) {
+    commitLayoutChange((current) =>
+      unstackHorizontalBookStack(current, shelf, stackId),
     );
     setSelectedBookId(null);
     setSelectedBookIds([]);
@@ -784,11 +798,12 @@ export function ShelfView({
         selectedBookId={selectedBookId}
         selectedBookIds={selectedBookIds}
         onSelectBookForEditing={selectBookForEditing}
-        onMoveBook={(activeItemId, overItemId) =>
+        onDropItem={(activeItemId, overItemId) =>
           commitLayoutChange((current) =>
-            moveShelfItem(current, "read", activeItemId, overItemId),
+            applyShelfDragOperation(current, "read", activeItemId, overItemId),
           )
         }
+        onUnstack={(stackId) => unstackBooks("read", stackId)}
         hidden={selectedShelf !== "read"}
       />
       <ShelfPanel
@@ -801,11 +816,17 @@ export function ShelfView({
         selectedBookId={selectedBookId}
         selectedBookIds={selectedBookIds}
         onSelectBookForEditing={selectBookForEditing}
-        onMoveBook={(activeItemId, overItemId) =>
+        onDropItem={(activeItemId, overItemId) =>
           commitLayoutChange((current) =>
-            moveShelfItem(current, "wantToRead", activeItemId, overItemId),
+            applyShelfDragOperation(
+              current,
+              "wantToRead",
+              activeItemId,
+              overItemId,
+            ),
           )
         }
+        onUnstack={(stackId) => unstackBooks("wantToRead", stackId)}
         hidden={selectedShelf !== "wantToRead"}
       />
     </article>
@@ -822,7 +843,8 @@ interface ShelfPanelProps {
   selectedBookId: number | null;
   selectedBookIds: number[];
   onSelectBookForEditing: (bookId: number) => void;
-  onMoveBook: (activeItemId: string, overItemId: string) => void;
+  onDropItem: (activeItemId: string, overItemId: string) => void;
+  onUnstack: (stackId: string) => void;
   hidden: boolean;
 }
 
@@ -836,33 +858,42 @@ function ShelfPanel({
   selectedBookId,
   selectedBookIds,
   onSelectBookForEditing,
-  onMoveBook,
+  onDropItem,
+  onUnstack,
   hidden,
 }: ShelfPanelProps) {
   const [previewLayout, setPreviewLayout] = useState<ShelfSceneLayout | null>(null);
-  const [activeItemId, setActiveItemId] = useState<string | null>(null);
+  const [overItemId, setOverItemId] = useState<string | null>(null);
+  const [activeOverlay, setActiveOverlay] = useState<ShelfDragOverlay | null>(null);
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     useSensor(KeyboardSensor),
   );
   const displayedEntries = shelfEntriesInLayoutOrder(books, previewLayout ?? layout);
-  const activeEntry = activeItemId
-    ? displayedEntries.find((entry) => shelfEntryPlacementId(entry) === activeItemId)
+  const announcements = shelfDragAnnouncements(books, layout);
+  const dropPreviewMember = overItemId
+    ? parseStackMemberDragId(overItemId)
     : null;
+  const endRowId = layout?.rows.at(-1)?.id ?? null;
 
   function updatePreview(activeItemId: string, overItemId: string) {
     if (!layout) return;
-    const preview = moveShelfItem(
+    const preview = createShelfDragPreview(
       { version: 1, shelves: { read: layout, wantToRead: layout } },
       "read",
       activeItemId,
       overItemId,
     ).shelves.read;
     setPreviewLayout(preview);
+    setOverItemId(preview === layout ? null : overItemId);
   }
 
   function handleDragStart(event: DragStartEvent) {
-    setActiveItemId(String(event.active.id));
+    const nextActiveItemId = String(event.active.id);
+    setActiveOverlay(
+      findShelfDragOverlay(books, layout, nextActiveItemId),
+    );
+    setOverItemId(null);
     setPreviewLayout(layout);
   }
 
@@ -871,8 +902,13 @@ function ShelfPanel({
   }
 
   function finishDrag(event: DragEndEvent) {
-    if (event.over) onMoveBook(String(event.active.id), String(event.over.id));
-    setActiveItemId(null);
+    if (event.over) onDropItem(String(event.active.id), String(event.over.id));
+    clearDragState();
+  }
+
+  function clearDragState() {
+    setOverItemId(null);
+    setActiveOverlay(null);
     setPreviewLayout(null);
   }
 
@@ -888,10 +924,11 @@ function ShelfPanel({
       {books.length > 0 ? (
         isEditing ? <DndContext
           sensors={sensors}
+          accessibility={{ announcements }}
           onDragStart={handleDragStart}
           onDragOver={handleDragOver}
           onDragEnd={finishDrag}
-          onDragCancel={() => { setActiveItemId(null); setPreviewLayout(null); }}
+          onDragCancel={clearDragState}
         >
         <ul className="bookshelf" aria-label={`${shelfLabel} bookshelf`}>
           {displayedEntries.map((entry, index) =>
@@ -906,7 +943,7 @@ function ShelfPanel({
                 isEditing={isEditing}
                 isSelectedForEditing={selectedBookIds.includes(entry.book.id) || selectedBookId === entry.book.id}
                 onSelectForEditing={() => onSelectBookForEditing(entry.book.id)}
-                isDropPreview={activeItemId === entry.item.id}
+                isDropPreview={overItemId === entry.item.id}
               />
             ) : (
               <DraggableHorizontalBookStack
@@ -916,23 +953,38 @@ function ShelfPanel({
                 isEditing
                 selectedBookIds={selectedBookIds}
                 onSelectBookForEditing={onSelectBookForEditing}
-                isDropPreview={activeItemId === `stack:${entry.stack.id}`}
+                onUnstack={() => onUnstack(entry.stack.id)}
+                isDropPreview={overItemId === `stack:${entry.stack.id}`}
+                dropPreviewMemberItemId={
+                  dropPreviewMember?.stackId === entry.stack.id
+                    ? dropPreviewMember.bookItemId
+                    : null
+                }
               />
             ),
           )}
+          {endRowId ? (
+            <ShelfRowEndDropTarget
+              rowId={endRowId}
+              isDropPreview={overItemId === shelfRowEndDragId(endRowId)}
+            />
+          ) : null}
         </ul>
         <DragOverlay>
-          {activeEntry ? (
+          {activeOverlay ? (
             <ul className="shelf-drag-overlay">
-              {activeEntry.kind === "book" ? (
+              {activeOverlay.kind === "book" ? (
                 <BookCard
-                  book={activeEntry.book}
-                  presentation={activeEntry.item.presentation}
-                  orientation={activeEntry.item.orientation}
+                  book={activeOverlay.book}
+                  presentation={activeOverlay.item.presentation}
+                  orientation={activeOverlay.item.orientation}
                   isEditing
                 />
               ) : (
-                <HorizontalBookStack stack={activeEntry.stack} books={activeEntry.books} />
+                <HorizontalBookStack
+                  stack={activeOverlay.stack}
+                  books={activeOverlay.books}
+                />
               )}
             </ul>
           ) : null}
@@ -1003,13 +1055,33 @@ function DraggableBookCard({ itemId, isEditing, isDropPreview, ...props }: Dragg
   );
 }
 
+function ShelfRowEndDropTarget({
+  rowId,
+  isDropPreview,
+}: {
+  rowId: string;
+  isDropPreview: boolean;
+}) {
+  const droppable = useDroppable({ id: shelfRowEndDragId(rowId) });
+  return (
+    <li
+      className="shelf-row-end-drop-target"
+      data-drop-preview={isDropPreview || undefined}
+      ref={droppable.setNodeRef}
+      aria-label="End of shelf row"
+    />
+  );
+}
+
 interface DraggableHorizontalBookStackProps {
   entry: Extract<RenderableShelfEntry, { kind: "stack" }>;
   eager: boolean;
   isEditing: boolean;
   selectedBookIds: readonly number[];
   onSelectBookForEditing: (bookId: number) => void;
+  onUnstack: () => void;
   isDropPreview: boolean;
+  dropPreviewMemberItemId: string | null;
 }
 
 function DraggableHorizontalBookStack({
@@ -1018,7 +1090,9 @@ function DraggableHorizontalBookStack({
   isEditing,
   selectedBookIds,
   onSelectBookForEditing,
+  onUnstack,
   isDropPreview,
+  dropPreviewMemberItemId,
 }: DraggableHorizontalBookStackProps) {
   const itemId = `stack:${entry.stack.id}`;
   const draggable = useDraggable({ id: itemId, disabled: !isEditing });
@@ -1032,6 +1106,8 @@ function DraggableHorizontalBookStack({
       isEditing={isEditing}
       selectedBookIds={selectedBookIds}
       onSelectBookForEditing={onSelectBookForEditing}
+      onUnstack={onUnstack}
+      dropPreviewMemberItemId={dropPreviewMemberItemId}
       drag={{
         attributes: draggable.attributes,
         listeners: draggable.listeners,
@@ -1044,6 +1120,240 @@ function DraggableHorizontalBookStack({
       }}
     />
   );
+}
+
+interface StackMemberDragTarget {
+  stackId: string;
+  bookItemId: string;
+}
+
+export function applyShelfDragOperation(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  activeItemId: string,
+  overItemId: string,
+): ShelfLayout {
+  const activeMember = parseStackMemberDragId(activeItemId);
+  const overMember = parseStackMemberDragId(overItemId);
+  const overRowEnd = parseShelfRowEndDragId(overItemId);
+  const overStackId =
+    overMember?.stackId ?? stackIdFromPlacementId(overItemId);
+
+  if (activeMember) {
+    if (overStackId) return layout;
+    if (overRowEnd) {
+      return removeBookFromHorizontalStackToRowEnd(
+        layout,
+        shelf,
+        activeMember.stackId,
+        activeMember.bookItemId,
+        overRowEnd,
+      );
+    }
+    return removeBookFromHorizontalStack(
+      layout,
+      shelf,
+      activeMember.stackId,
+      activeMember.bookItemId,
+      overItemId,
+    );
+  }
+
+  if (activeItemId.startsWith("stack:")) {
+    if (overRowEnd) return layout;
+    return moveShelfItem(
+      layout,
+      shelf,
+      activeItemId,
+      overMember ? `stack:${overMember.stackId}` : overItemId,
+    );
+  }
+
+  if (overStackId) {
+    const stack = layout.shelves[shelf].stacks[overStackId];
+    const memberIndex = overMember
+      ? stack?.bookItemIds.indexOf(overMember.bookItemId)
+      : undefined;
+    return addBookToHorizontalStack(
+      layout,
+      shelf,
+      overStackId,
+      activeItemId,
+      memberIndex !== undefined && memberIndex >= 0
+        ? memberIndex
+        : undefined,
+    );
+  }
+
+  if (overRowEnd) return layout;
+
+  return moveShelfItem(layout, shelf, activeItemId, overItemId);
+}
+
+export function createShelfDragPreview(
+  layout: ShelfLayout,
+  shelf: ShelfLayoutShelfName,
+  activeItemId: string,
+  overItemId: string,
+): ShelfLayout {
+  const preview = applyShelfDragOperation(
+    layout,
+    shelf,
+    activeItemId,
+    overItemId,
+  );
+  const activeMember = parseStackMemberDragId(activeItemId);
+  if (!activeMember || preview === layout) return preview;
+
+  const sourceScene = layout.shelves[shelf];
+  const sourceStack = sourceScene.stacks[activeMember.stackId];
+  if (!sourceStack || sourceStack.bookItemIds.length !== 2) return preview;
+
+  const remainingBookItemId = sourceStack.bookItemIds.find(
+    (bookItemId) => bookItemId !== activeMember.bookItemId,
+  );
+  const previewScene = preview.shelves[shelf];
+  if (!remainingBookItemId || previewScene.stacks[sourceStack.id]) {
+    return preview;
+  }
+
+  const stackPlacement = `stack:${sourceStack.id}`;
+  const rows = previewScene.rows.map((row) => ({
+    ...row,
+    items: row.items.map((itemId) =>
+      itemId === remainingBookItemId ? stackPlacement : itemId,
+    ),
+  }));
+
+  return {
+    ...preview,
+    shelves: {
+      ...preview.shelves,
+      [shelf]: {
+        ...previewScene,
+        rows,
+        stacks: {
+          ...previewScene.stacks,
+          [sourceStack.id]: {
+            ...sourceStack,
+            bookItemIds: [remainingBookItemId],
+          },
+        },
+      },
+    },
+  };
+}
+
+function parseStackMemberDragId(
+  dragId: string,
+): StackMemberDragTarget | null {
+  const match = /^stack-member:([^:]+):(book:\d+)$/.exec(dragId);
+  return match
+    ? { stackId: match[1]!, bookItemId: match[2]! }
+    : null;
+}
+
+function stackIdFromPlacementId(placementId: string): string | null {
+  return placementId.startsWith("stack:")
+    ? placementId.slice("stack:".length)
+    : null;
+}
+
+function shelfRowEndDragId(rowId: string): string {
+  return `shelf-row-end:${encodeURIComponent(rowId)}`;
+}
+
+function parseShelfRowEndDragId(dragId: string): string | null {
+  if (!dragId.startsWith("shelf-row-end:")) return null;
+  try {
+    return decodeURIComponent(dragId.slice("shelf-row-end:".length));
+  } catch {
+    return null;
+  }
+}
+
+type ShelfDragOverlay = RenderableShelfEntry;
+
+function findShelfDragOverlay(
+  books: ShelfSnapshotDto["shelves"]["read"],
+  layout: ShelfSceneLayout | null,
+  activeItemId: string,
+): ShelfDragOverlay | null {
+  const entries = shelfEntriesInLayoutOrder(books, layout);
+  const member = parseStackMemberDragId(activeItemId);
+
+  if (member) {
+    const stackEntry = entries.find(
+      (entry): entry is Extract<RenderableShelfEntry, { kind: "stack" }> =>
+        entry.kind === "stack" && entry.stack.id === member.stackId,
+    );
+    const stackBook = stackEntry?.books.find(
+      ({ item }) => item.id === member.bookItemId,
+    );
+    return stackBook ? { kind: "book", ...stackBook } : null;
+  }
+
+  return (
+    entries.find((entry) => shelfEntryPlacementId(entry) === activeItemId) ??
+    null
+  );
+}
+
+function shelfDragAnnouncements(
+  books: ShelfSnapshotDto["shelves"]["read"],
+  layout: ShelfSceneLayout | null,
+): Announcements {
+  const describe = (dragId: string) => describeShelfDragId(books, layout, dragId);
+
+  return {
+    onDragStart({ active }) {
+      return `Picked up ${describe(String(active.id))}.`;
+    },
+    onDragOver({ active, over }) {
+      return over
+        ? `Moving ${describe(String(active.id))} over ${describe(String(over.id))}.`
+        : `${describe(String(active.id))} is not over a shelf position.`;
+    },
+    onDragEnd({ active, over }) {
+      return over
+        ? `Dropped ${describe(String(active.id))} on ${describe(String(over.id))}.`
+        : `Dropped ${describe(String(active.id))} without changing its position.`;
+    },
+    onDragCancel({ active }) {
+      return `Cancelled moving ${describe(String(active.id))}.`;
+    },
+  };
+}
+
+function describeShelfDragId(
+  books: ShelfSnapshotDto["shelves"]["read"],
+  layout: ShelfSceneLayout | null,
+  dragId: string,
+): string {
+  const member = parseStackMemberDragId(dragId);
+  if (member) {
+    const item = layout?.items[member.bookItemId];
+    const book =
+      item?.kind === "book"
+        ? books.find((candidate) => candidate.id === item.bookId)
+        : null;
+    return book ? `${book.title} from its stack` : "stack member";
+  }
+
+  if (parseShelfRowEndDragId(dragId)) return "end of the shelf row";
+
+  const stackId = stackIdFromPlacementId(dragId);
+  if (stackId) {
+    const count = layout?.stacks[stackId]?.bookItemIds.length;
+    return count ? `stack of ${count} books` : "book stack";
+  }
+
+  const item = layout?.items[dragId];
+  const book =
+    item?.kind === "book"
+      ? books.find((candidate) => candidate.id === item.bookId)
+      : null;
+  return book?.title ?? "shelf position";
 }
 
 function snapshotBookIds(snapshot: ShelfSnapshotDto): ShelfBookIds {
